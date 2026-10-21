@@ -1,0 +1,32 @@
+name: Compilar y publicar
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Compilar para B288 y RK3566
+        run: make
+      # Rama «dist»: lo que descarga la web (por jsDelivr, que deja leerlo desde el navegador)
+      - name: Publicar en la rama dist
+        run: |
+          cd dist
+          git init -q -b dist
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Apps compiladas de ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" dist
+      - name: Refrescar la caché de jsDelivr
+        run: curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@dist/apps.json" > /dev/null || true
