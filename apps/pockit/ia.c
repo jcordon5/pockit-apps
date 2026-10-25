@@ -17,6 +17,10 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include "../../common/md.h"
+#include "pockit.h"
+#include "../../common/ai.h"
+/* en Pockit, «cerrar» un módulo es volver al Inicio */
+#define CloseApp pockit_home
 
 #define CHATS_DIR FLASHDIR "/Chats"
 #define NOTES_DIR FLASHDIR "/Notas"
@@ -74,13 +78,13 @@ static int nmsgs;
 static char cur_path[512], cur_title[256];
 static int scroll_row, total_rows;
 
-enum { LIST, CHAT, NOKEY } screen = LIST;
+static enum { LIST, CHAT, NOKEY } screen = LIST;
 static int shown_once;
 static char kbd[4096];
 
 static const char *MESES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
 
-static void refresh(void) { if (!shown_once) { FullUpdate(); shown_once = 1; } else SoftUpdate(); }
+static void refresh(void) { POCKIT_REFRESH(shown_once); }
 static void trim_nl(char *s) { size_t n = strlen(s); while (n && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ')) s[--n] = 0; }
 
 static void date_str(time_t t, char *out, size_t n)
@@ -476,7 +480,9 @@ static void ask(void)
                 double pin = json_num(u, "prompt_tokens"), outk = json_num(u, "completion_tokens");
                 if (hit + miss <= 0) miss = pin;
                 const Model *m = &MODELS[model];
-                chat_cost += price_factor() * (hit * m->hit + miss * m->in + outk * m->out) / 1e6;
+                double delta = price_factor() * (hit * m->hit + miss * m->in + outk * m->out) / 1e6;
+                chat_cost += delta;
+                ai_log_cost(delta, "Chat");   /* para el gasto total de los Ajustes */
             }
             if (json_get(line + 6, "content", piece, sizeof piece)) {
                 size_t pl = strlen(piece);
@@ -523,6 +529,8 @@ static int list_rows(void) { return (H - LIST_TOP - 40) / ROW_H; }
 static void draw_list(void)
 {
     ClearScreen();
+    SetFont(f_small, SOFT);
+    DrawString(M - 20, 10, "‹ Pockit");
     SetFont(f_title, BLACK);
     DrawString(M, 60, "Chats");
     DrawTextRect(W - M - 120, 40, 120, 100, "+", ALIGN_RIGHT | VALIGN_MIDDLE);
@@ -555,6 +563,8 @@ static void draw_list(void)
 static void draw_nokey(void)
 {
     ClearScreen();
+    SetFont(f_small, SOFT);
+    DrawString(M - 20, 10, "‹ Pockit");
     SetFont(f_title, BLACK);
     DrawString(M, 60, "IA");
     SetFont(f_body, BLACK);
@@ -675,6 +685,7 @@ static void choose_model(void)
 
 static void list_tap(int x, int y)
 {
+    if (y < 50 && x < W / 3) { CloseApp(); return; }
     if (y > 120 && y < LIST_TOP - 20 && x < W - M - 160) { choose_model(); return; }
     if (y < LIST_TOP - 20) {
         if (x > W - M - 160) { kbd[0] = 0; OpenKeyboard("Nueva pregunta", kbd, sizeof kbd - 1, KBD_NORMAL | KBD_NOEVTSHOW, on_question); }
@@ -738,6 +749,7 @@ static int handler(int type, int par1, int par2)
     case EVT_POINTERUP:
         if (long_pressed) { long_pressed = 0; return 1; }
         if (screen == CHAT) chat_tap(par1, par2);
+        else if (screen == NOKEY && par2 < 50 && par1 < W / 3) CloseApp();
         else if (screen == NOKEY) { kbd[0] = 0; OpenKeyboard("Clave de DeepSeek", kbd, 200, KBD_ENTEXT | KBD_NOEVTSHOW, on_key); }
         else list_tap(par1, par2);
         return 1;
@@ -756,11 +768,11 @@ static int handler(int type, int par1, int par2)
     return 0;
 }
 
-int main(int argc, char *argv[])
+void ia_args(int argc, char *argv[])
 {
     if (argc > 2 && !strcmp(argv[1], "--preguntar")) { auto_question = argv[2]; argc = 1; }
     /* Para las capturas del emulador: «ia ruta.md» abre ese chat directamente. */
     if (argc > 1) { screen = CHAT; load_chat(argv[1]); scroll_row = 0; }
-    InkViewMain(handler);
-    return 0;
 }
+
+int ia_handler(int type, int par1, int par2) { return handler(type, par1, par2); }

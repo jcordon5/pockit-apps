@@ -1,38 +1,29 @@
 {
-  "version": 1,
+  "version": 2,
   "apps": [
+    {
+      "id": "pockit",
+      "file": "Pockit.app",
+      "title": "Pockit",
+      "version": "2.0.0",
+      "summary": "Tu centro de lectura: Lectura con IA, Cuaderno, chat, Fondos y Ajustes",
+      "description": "Una sola app con todo: tus estadísticas y libros, «Dónde voy» (resumen sin destripes), personajes, explicaciones de subrayados y apuntes; el Cuaderno de notas y tareas; el chat de IA; los fondos de reposo y los ajustes. Funciona sin IA; con tu clave de DeepSeek, además resume y explica gastando céntimos.",
+      "needsKey": true,
+      "shot": "pockit-inicio",
+      "replaces": [
+        { "id": "cuaderno", "file": "Cuaderno.app" },
+        { "id": "ia", "file": "IA.app" },
+        { "id": "lectura", "file": "Lectura.app" }
+      ]
+    },
     {
       "id": "bolsillo",
       "file": "Bolsillo.app",
       "title": "Modo bolsillo",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "summary": "Música y audiolibros con el lector en el bolsillo",
-      "description": "Apaga la luz, ignora el táctil y no deja que el lector se duerma, con tu fondo de reposo y la canción que suena. Un botón de página te devuelve a donde estabas."
-    },
-    {
-      "id": "cuaderno",
-      "file": "Cuaderno.app",
-      "title": "Cuaderno",
-      "version": "1.0.0",
-      "summary": "Notas y tareas en Markdown",
-      "description": "Notas sobre papel pautado con títulos, listas, tareas y negritas. Se escribe en la propia nota, con un teclado en español. Todo se guarda como .md en la carpeta Notas."
-    },
-    {
-      "id": "ia",
-      "file": "IA.app",
-      "title": "IA",
-      "version": "1.0.0",
-      "summary": "Pregunta dudas y pasajes a DeepSeek",
-      "description": "Chats con historial, respuestas con formato y su coste. Guarda cualquier respuesta en el Cuaderno. Necesita tu clave de DeepSeek.",
-      "needsKey": true
-    },
-    {
-      "id": "lectura",
-      "file": "Lectura.app",
-      "title": "Lectura",
-      "version": "1.0.0",
-      "summary": "Tus estadísticas en el propio lector",
-      "description": "Progreso, calendario de actividad, ficha de cada libro, subrayados y tarjetas de vocabulario con las palabras que guardas del diccionario."
+      "description": "Apaga la luz, ignora el táctil y no deja que el lector se duerma, con tu fondo de reposo y la canción que suena. Un botón de página te devuelve a donde estabas. Va aparte para abrirlo de un toque.",
+      "shot": "bolsillo"
     }
   ]
 }

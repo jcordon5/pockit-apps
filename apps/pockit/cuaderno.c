@@ -16,6 +16,9 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include "../../common/md.h"
+#include "pockit.h"
+/* en Pockit, «cerrar» un módulo es volver al Inicio */
+#define CloseApp pockit_home
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -72,11 +75,11 @@ static char cur_path[512];
 static int line_y0[MAX_LINES], line_y1[MAX_LINES];   /* dónde quedó cada línea en pantalla */
 static int scroll_row, total_rows;
 
-enum { LIST, NOTE } screen = LIST;
+static enum { LIST, NOTE } screen = LIST;
 static int shown_once;
 
 /* Sin destello salvo la primera vez: el usuario no quiere un parpadeo por toque. */
-static void refresh(void) { if (!shown_once) { FullUpdate(); shown_once = 1; } else SoftUpdate(); }
+static void refresh(void) { POCKIT_REFRESH(shown_once); }
 static int list_scroll;
 static char kbd[LINE_MAX];
 static int editing = -1;    /* línea que se está editando; nlines = nueva al final */
@@ -802,6 +805,8 @@ static void draw_list(void)
 {
     trace("pinto lista");
     ClearScreen();
+    SetFont(f_small, SOFT);
+    DrawString(M - 20, 10, "‹ Pockit");
     SetFont(f_title, BLACK);
     DrawString(M, 60, "Notas");
     SetFont(f_title, BLACK);
@@ -933,6 +938,7 @@ static void note_tap(int x, int y)
 
 static void list_tap(int x, int y)
 {
+    if (y < 50 && x < W / 3) { CloseApp(); return; }
     if (y < LIST_TOP - 20) {
         if (x > W - M - 160) new_note();
         return;
@@ -1016,7 +1022,7 @@ static int handler(int type, int par1, int par2)
     return 0;
 }
 
-int main(int argc, char *argv[])
+void cuaderno_args(int argc, char *argv[])
 {
     mkdir(FLASHDIR "/applications/.pruebas", 0755);
     signal(SIGSEGV, on_crash); signal(SIGBUS, on_crash); signal(SIGABRT, on_crash); signal(SIGILL, on_crash); signal(SIGFPE, on_crash);
@@ -1028,6 +1034,36 @@ int main(int argc, char *argv[])
         if (*p == '|') key_enter(); else if (*p == '<') key_backspace();
         else { char c[2] = { *p, 0 }; insert_text(c); }
     }
-    InkViewMain(handler);
-    return 0;
+}
+
+int cuaderno_handler(int type, int par1, int par2) { return handler(type, par1, par2); }
+
+/* ---------- lo que el Cuaderno le da al resto de Pockit ---------- */
+int cuaderno_tasks(char out[][200], int max)
+{
+    scan_notes();
+    int n = 0;
+    char buf[LINE_MAX];
+    for (int i = 0; i < nnotes && n < max; i++) {
+        FILE *f = fopen(notes[i].path, "r");
+        while (f && n < max && fgets(buf, sizeof buf, f)) {
+            trim_nl(buf);
+            const char *t = buf;
+            while (*t == ' ') t++;
+            if (strncmp(t, "- [ ] ", 6) || !t[6]) continue;
+            plain(t, out[n], 200);
+            n++;
+        }
+        if (f) fclose(f);
+    }
+    return n;
+}
+
+void cuaderno_open_note(const char *path)
+{
+    load_note(path);
+    screen = NOTE;
+    editing_mode = 0;
+    scroll_row = 0;
+    pockit_open(MOD_CUADERNO);
 }

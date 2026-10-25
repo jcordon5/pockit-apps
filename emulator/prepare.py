@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepara emulator/rt: el sistema del emulador de InkView y datos de ejemplo (libros de
 dominio público, notas y un chat) para hacer capturas sin un lector de verdad."""
-import os, shutil, sqlite3, subprocess, time
+import json, os, shutil, sqlite3, subprocess, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -32,7 +32,7 @@ os.makedirs(os.path.join(EXT1, "system", "config"), exist_ok=True)
 
 # biblioteca: (título, autor, página, total, días desde la última apertura, terminado)
 books = [
-    ("Don Quijote de la Mancha", "Miguel de Cervantes", 412, 1104, 0, 0),
+    ("Don Quijote de la Mancha", "Miguel de Cervantes", 61, 1104, 0, 0),
     ("Niebla", "Miguel de Unamuno", 61, 196, 2, 0),
     ("Fortunata y Jacinta", "Benito Pérez Galdós", 233, 1035, 5, 0),
     ("La Regenta", "Leopoldo Alas «Clarín»", 820, 820, 21, 1),
@@ -45,14 +45,19 @@ db.executescript("""
 create table books_impl(id integer primary key, title, author, ts_added, hidden default 0);
 create table folders(id integer primary key, name);
 create table files(id integer primary key, folder_id, book_id, filename);
-create table books_settings(bookid, profileid default 1, cpage, npage, opentime, completed, completed_ts);
+create table books_settings(bookid, profileid default 1, cpage, npage, opentime, completed, completed_ts, position);
 insert into folders values (1, '/mnt/ext1/Libros');
 """)
+# el Quijote de verdad (Project Gutenberg, dominio público) para probar la IA de lectura
+os.makedirs(os.path.join(EXT1, "Libros"), exist_ok=True)
+quijote = os.path.join(EXT1, "Libros", "Don Quijote de la Mancha.epub")
+if not os.path.exists(quijote):
+    subprocess.run(["curl", "-sfL", "-o", quijote, "https://www.gutenberg.org/cache/epub/2000/pg2000.epub"], check=False)
 for i, (t, a, p, n, ago, done) in enumerate(books, 1):
     opened = now - ago * day - 3600 if p else 0
     db.execute("insert into books_impl values (?,?,?,?,0)", (i, t, a, now - 90 * day))
     db.execute("insert into files values (?,?,?,?)", (i, 1, i, t + ".epub"))
-    db.execute("insert into books_settings values (?,1,?,?,?,?,?)", (i, p, n, opened, done, opened if done else 0))
+    db.execute("insert into books_settings values (?,1,?,?,?,?,?,?)", (i, p, n, opened, done, opened if done else 0, ""))
 db.commit()
 
 meta = sqlite3.connect(os.path.join(EXT1, "system", "config", "books.db"))
@@ -83,7 +88,7 @@ for t, kind, text, note, ago in marks:
     meta.execute("insert into Items values (?,?,4)", (oid, titles[t]))
     created = now - ago * day - 1800
     disp = ',"displayType":"translation"' if note.startswith("{") else ""
-    vals = [(1, kind), (2, '{"text":%s}' % __import__("json").dumps(text, ensure_ascii=False)), (3, note),
+    vals = [(1, kind), (2, '{"text":%s}' % json.dumps(text, ensure_ascii=False)), (3, note),
             (4, '{"created":%d%s}' % (created, disp))]
     for tag, v in vals:
         meta.execute("insert into Tags(ItemID,TagID,Val) values (?,?,?)", (oid, tag, v))
