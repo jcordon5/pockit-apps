@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "pockit.h"
 #include "../../common/ai.h"
 #include "icons.h"
@@ -65,6 +66,9 @@ static ibitmap *icon(const char *name, const unsigned char *data, int len)
 static const char *DIAS[] = { "domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado" };
 static const char *MESES[] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
 
+static char new_version[24];   /* versión nueva publicada, si la hay (ver «actualizaciones») */
+static void update_check(int force);
+
 /* ---------- Inicio ---------- */
 static int home_shown;
 static int card_y0, card_y1, donde_y0, tasks_y0, tasks_y1, tiles_y0;
@@ -74,7 +78,7 @@ typedef struct { const char *name; int mod; const unsigned char *icon; int len; 
 static const Tile TILES[] = {
     { "Lectura", MOD_LECTURA, icon_lectura, sizeof icon_lectura },
     { "Cuaderno", MOD_CUADERNO, icon_cuaderno, sizeof icon_cuaderno },
-    { "IA", MOD_IA, icon_ia, sizeof icon_ia },
+    { "Pockit AI", MOD_IA, icon_ia, sizeof icon_ia },
     { "Fondos", MOD_FONDOS, icon_fondos, sizeof icon_fondos },
     { "Ajustes", MOD_AJUSTES, icon_ajustes, sizeof icon_ajustes },
 };
@@ -180,9 +184,17 @@ static void draw_home(void)
         ibitmap *b = icon(TILES[i].name, TILES[i].icon, TILES[i].len);
         if (b) { DrawBitmap(x + (tw - b->width) / 2, ty + 18, b); free(b); }
         SetFont(f_body, BLACK);
-        DrawTextRect(x, ty + 128, tw, 40, TILES[i].name, ALIGN_CENTER);
+        DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? "Ajustes ·" : TILES[i].name, ALIGN_CENTER);
     }
     POCKIT_REFRESH(home_shown);
+}
+
+static void home_update_tick(void)
+{
+    if (cur != MOD_HOME) return;
+    int had = new_version[0];
+    update_check(0);
+    if (!had && new_version[0] && cur == MOD_HOME) draw_home();
 }
 
 static int home_handler(int type, int par1, int par2)
@@ -194,6 +206,7 @@ static int home_handler(int type, int par1, int par2)
         break;
     case EVT_SHOW:
         draw_home();
+        SetWeakTimer("pk_update_check", home_update_tick, 4000);   /* después de pintar: el Inicio no espera a la red */
         break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
@@ -212,10 +225,107 @@ static int home_handler(int type, int par1, int par2)
     return 0;
 }
 
+/* ---------- actualizaciones ----------
+ * Pockit mira, como mucho una vez al día y solo si la wifi ya está encendida (nunca la
+ * enciende por esto), si hay una versión nueva en el catálogo. Si la hay, los Ajustes lo
+ * dicen y se instala con un toque: baja el programa de su plataforma y sustituye al actual. */
+#define APPS_CDN "https://cdn.jsdelivr.net/gh/jcordon5/pockit-apps@dist"
+#define UPDATE_TXT POCKIT_DIR "/actualizacion.txt"   /* «<cuándo se miró>\t<versión publicada>» */
+static long update_checked;
+
+static int ver_cmp(const char *a, const char *b)
+{
+    int x[3] = { 0 }, y[3] = { 0 };
+    sscanf(a, "%d.%d.%d", &x[0], &x[1], &x[2]);
+    sscanf(b, "%d.%d.%d", &y[0], &y[1], &y[2]);
+    for (int i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+
+static void update_check(int force)
+{
+    char buf[200], ver[24] = "";
+    FILE *f = fopen(UPDATE_TXT, "r");
+    if (f) { if (fgets(buf, sizeof buf, f)) { update_checked = atol(buf); char *t = strchr(buf, '\t'); if (t) { snprintf(ver, sizeof ver, "%s", t + 1); ver[strcspn(ver, "\r\n")] = 0; } } fclose(f); }
+    long now = time(NULL);
+    if (force || now - update_checked > 86400) {
+        if (force && !(QueryNetwork() & NET_CONNECTED)) NetConnect2(NULL, true);   /* lo ha pedido la persona */
+        if (QueryNetwork() & NET_CONNECTED) {
+            FILE *p = popen("curl -s -m 8 '" APPS_CDN "/apps.json'", "r");
+            JBuf b = { 0 };
+            size_t r;
+            while (p && (r = fread(buf, 1, sizeof buf, p)) > 0) jb_put(&b, buf, r);
+            if (p) pclose(p);
+            static JTok t[256];
+            int n = b.s ? json_parse(b.s, (int)b.len, t, 256) : -1, apps = n > 0 ? json_key(b.s, t, n, 0, "apps") : -1;
+            for (int k = 0; apps >= 0 && k < t[apps].size; k++) {
+                int e = json_at(t, n, apps, k), id = json_key(b.s, t, n, e, "id"), v = json_key(b.s, t, n, e, "version");
+                if (id >= 0 && v >= 0 && json_eq(b.s, &t[id], "pockit")) json_str(b.s, &t[v], ver, sizeof ver);
+            }
+            free(b.s);
+            if (n > 0) {
+                update_checked = now;
+                mkdir(POCKIT_DIR, 0755);
+                if ((f = fopen(UPDATE_TXT, "w"))) { fprintf(f, "%ld\t%s\n", now, ver); fclose(f); }
+            }
+        }
+    }
+    new_version[0] = 0;
+    if (ver[0] && ver_cmp(ver, POCKIT_VERSION) > 0) snprintf(new_version, sizeof new_version, "%s", ver);
+}
+
+/* El programa que corre y su plataforma: el del Q (RK3566) es de coma flotante por hardware. */
+static int self_path(char *out, size_t n) { ssize_t l = readlink("/proc/self/exe", out, n - 1); if (l <= 0) return 0; out[l] = 0; return 1; }
+static int elf_hardfloat(const char *path)
+{
+    unsigned char h[40];
+    FILE *f = fopen(path, "rb");
+    int ok = f && fread(h, 1, sizeof h, f) == sizeof h;
+    if (f) fclose(f);
+    if (!ok || memcmp(h, "\x7f" "ELF", 4)) return -1;
+    return (h[36] | h[37] << 8 | h[38] << 16 | (unsigned)h[39] << 24) & 0x400 ? 1 : 0;
+}
+
+static void close_after_update(void) { CloseApp(); }
+static void draw_ajustes(void);
+static void do_update(int button)
+{
+    if (button != 1) { draw_ajustes(); return; }
+    char self[600], tmp[620], cmd[900];
+    int hf = self_path(self, sizeof self) ? elf_hardfloat(self) : -1;
+    if (hf < 0) { Message(ICON_WARNING, "Pockit", "No se pudo saber dónde está instalado Pockit. Actualiza desde pockit.yous.dev.", 4000); return; }
+    if (!(QueryNetwork() & NET_CONNECTED) && NetConnect2(NULL, true) != 0 && !(QueryNetwork() & NET_CONNECTED)) {
+        Message(ICON_WARNING, "Pockit", "No hay conexión. Activa la wifi y vuelve a intentarlo.", 3000);
+        return;
+    }
+    int by = H / 2 - 80;   /* aviso mientras baja: un recuadro, sin esperar a que se cierre un mensaje */
+    FillArea(M, by, W - 2 * M, 160, WHITE);
+    for (int i = 0; i < 3; i++) DrawRect(M + i, by + i, W - 2 * M - 2 * i, 160 - 2 * i, BLACK);
+    SetFont(f_body, BLACK);
+    DrawTextRect(M + 30, by, W - 2 * M - 60, 160, "Descargando la versión nueva…", ALIGN_CENTER | VALIGN_MIDDLE);
+    PartialUpdate(M, by, W - 2 * M, 160);
+    snprintf(tmp, sizeof tmp, "%s.nuevo", self);
+    snprintf(cmd, sizeof cmd, "curl -sfL -m 180 -o '%s' '" APPS_CDN "/%s/pockit.app'", tmp, hf ? "RK3566" : "B288");
+    int st = system(cmd);
+    struct stat sb;
+    /* solo se cambia si lo descargado es un programa de la misma plataforma */
+    if (st != 0 || stat(tmp, &sb) || sb.st_size < 100000 || elf_hardfloat(tmp) != hf) {
+        remove(tmp);
+        Message(ICON_WARNING, "Pockit", "No se pudo descargar la actualización. Pockit sigue como estaba.", 4000);
+        return;
+    }
+    chmod(tmp, 0755);
+    if (rename(tmp, self)) { remove(tmp); Message(ICON_WARNING, "Pockit", "No se pudo instalar. Pockit sigue como estaba.", 4000); return; }
+   
+    static char msg[200];
+    snprintf(msg, sizeof msg, "Pockit %s instalado. Se cierra ahora: ábrelo otra vez para usar la versión nueva.", new_version);
+    Message(ICON_INFORMATION, "Pockit", msg, 3500);
+    SetWeakTimer("pk_update", close_after_update, 3600);
+}
+
 /* ---------- Ajustes ---------- */
 static int aj_shown;
-static char kbd[300];
-static int key_y, model_y, apps_y;
+static int ai_y, ver_y;
 
 static void draw_ajustes(void)
 {
@@ -227,93 +337,68 @@ static void draw_ajustes(void)
     SetFont(f_title, BLACK);
     DrawString(M, 110, "Ajustes");
     int y = 230;
+    char line[300];
 
     SetFont(f_smallb, SOFT);
-    DrawString(M, y, "INTELIGENCIA ARTIFICIAL");
+    DrawString(M, y, "POCKIT AI");
     y += 50;
-    key_y = y;
-    SetFont(f_body, BLACK);
-    char line[300];
-    if (has) {
-        size_t l = strlen(ai_key);
-        snprintf(line, sizeof line, "Clave de DeepSeek: guardada (…%s)", l > 4 ? ai_key + l - 4 : ai_key);
-    } else snprintf(line, sizeof line, "Clave de DeepSeek: sin configurar");
-    DrawString(M, y, line);
-    SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 50, W - 2 * M, 80, has ? "Toca para cambiarla." : "Pégala en pockit.yous.dev → Tu lector → Apps → IA, o toca aquí para escribirla.", ALIGN_LEFT);
-    y += 140;
-    DrawLine(M, y, W - M, y, LINE);
-    y += 24;
-    model_y = y;
-    for (int i = 0; i < AI_NMODELS; i++) {
-        int on = i == ai_model;
-        double per = ai_factor() * (1500 * AI_MODELS[i].in + 500 * AI_MODELS[i].out) / 1e6;
-        char mny[32];
-        ai_money(per, mny, sizeof mny);
-        DrawRect(M, y + 6, 40, 40, BLACK);
-        if (on) FillArea(M + 9, y + 15, 22, 22, BLACK);
-        SetFont(on ? f_bold : f_body, BLACK);
-        snprintf(line, sizeof line, "%s · %s", AI_MODELS[i].name, AI_MODELS[i].desc);
-        DrawString(M + 64, y + 4, line);
-        SetFont(f_small, SOFT);
-        snprintf(line, sizeof line, "≈ %s por respuesta", mny);
-        DrawString(M + 64, y + 52, line);
-        y += 110;
-    }
-    SetFont(f_small, SOFT);
-    DrawTextRect(M, y, W - 2 * M, 80, ai_peak() ? "Ahora es hora punta en DeepSeek: fuera de ella cuesta la mitad." : "Ahora es hora valle en DeepSeek: estás pagando la mitad.", ALIGN_LEFT);
-    y += 70;
-    DrawLine(M, y, W - M, y, LINE);
-    y += 24;
-    double mon, tot = ai_spent(&mon);
-    char a[32], b[32];
+    ai_y = y;
+    double mon;
+    ai_spent(&mon);
+    char a[32];
     ai_money(mon, a, sizeof a);
-    ai_money(tot, b, sizeof b);
-    snprintf(line, sizeof line, "Gastado este mes: %s  ·  en total: %s", a, b);
     SetFont(f_body, BLACK);
+    if (has) snprintf(line, sizeof line, "Activada · %s · %s este mes", AI_MODELS[ai_model].name, a);
+    else snprintf(line, sizeof line, "Sin activar");
     DrawString(M, y, line);
-    y += 90;
+    SetFont(f_small, SOFT);
+    DrawTextRect(M, y + 50, W - 2 * M, 80, has ? "Modelo, clave, gasto y errores: en Pockit AI → Uso y ajustes  ›"
+                                               : "Es opcional. Para activarla, pega una clave en pockit.yous.dev → Tu lector → Apps → IA.", ALIGN_LEFT);
+    y += 160;
+    DrawLine(M, y, W - M, y, LINE);
+    y += 30;
 
     SetFont(f_smallb, SOFT);
     DrawString(M, y, "POCKIT");
     y += 50;
-    apps_y = y;
+    ver_y = y;
     SetFont(f_body, BLACK);
     snprintf(line, sizeof line, "Versión %s", POCKIT_VERSION);
     DrawString(M, y, line);
-    SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 50, W - 2 * M, 80, "Para instalar, actualizar o quitar apps, y para cambiar fondos y música: pockit.yous.dev", ALIGN_LEFT);
+    if (new_version[0]) {
+        snprintf(line, sizeof line, "Hay una versión nueva: %s. Toca para instalarla  ›", new_version);
+        SetFont(f_bold, BLACK);
+    } else if (update_checked) {
+        char d[40];
+        struct tm tm;
+        time_t t = update_checked;
+        localtime_r(&t, &tm);
+        snprintf(d, sizeof d, "%d/%d %02d:%02d", tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min);
+        snprintf(line, sizeof line, "Al día (mirado el %s). Toca para mirar otra vez.", d);
+        SetFont(f_small, SOFT);
+    } else { snprintf(line, sizeof line, "Toca para buscar actualizaciones."); SetFont(f_small, SOFT); }
+    DrawTextRect(M, y + 50, W - 2 * M, 80, line, ALIGN_LEFT);
     y += 150;
-
-    SetFont(f_smallb, SOFT);
-    DrawString(M, y, "BATERÍA");
-    y += 50;
-    SetFont(f_small, BLACK);
-    DrawTextRect(M, y, W - 2 * M, 200,
-                 "Si escuchas música, ciérrala del todo antes de bloquear (mantén pulsado Inicio y quita el reproductor): "
-                 "en pausa, el lector no llega a dormirse y gasta batería. Para el bolsillo, usa el Modo bolsillo.", ALIGN_LEFT);
+    SetFont(f_small, SOFT);
+    DrawTextRect(M, y, W - 2 * M, 120, "Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev", ALIGN_LEFT);
     POCKIT_REFRESH(aj_shown);
-}
-
-static void on_key(char *s)
-{
-    if (s && s[0]) { ai_load_cfg(); snprintf(ai_key, sizeof ai_key, "%s", s); ai_save_cfg(); }
-    draw_ajustes();
 }
 
 static int ajustes_h(int type, int par1, int par2)
 {
     switch (type) {
     case EVT_INIT: SetPanelType(PANEL_DISABLED); fonts(); break;
-    case EVT_SHOW: draw_ajustes(); break;
+    case EVT_SHOW: update_check(0); draw_ajustes(); break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
         if (y < 90 && x < W / 3) { pockit_home(); return 1; }
-        if (y >= key_y - 10 && y < key_y + 130) { kbd[0] = 0; OpenKeyboard("Clave de DeepSeek", kbd, sizeof kbd - 1, KBD_ENTEXT | KBD_NOEVTSHOW, on_key); return 1; }
-        if (y >= model_y && y < model_y + AI_NMODELS * 110) {
-            int m = (y - model_y) / 110;
-            if (m != ai_model && ai_key[0]) { ai_model = m; ai_save_cfg(); draw_ajustes(); }
-            else if (!ai_key[0]) Message(ICON_INFORMATION, "IA", "Primero guarda tu clave de DeepSeek.", 2500);
+        if (y >= ai_y - 10 && y < ai_y + 140 && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
+        if (y >= ver_y - 10 && y < ver_y + 140) {
+            if (new_version[0]) {
+                static char q[300];
+                snprintf(q, sizeof q, "¿Instalar Pockit %s? Se descarga (menos de 1 MB) y Pockit se cierra para abrir la versión nueva. Tus notas, chats y datos no se tocan.", new_version);
+                Dialog(ICON_QUESTION, "Actualizar Pockit", q, "Instalar", "Ahora no", do_update);
+            } else { update_check(1); draw_ajustes(); if (!new_version[0]) Message(ICON_INFORMATION, "Pockit", update_checked ? "Tienes la última versión." : "No se pudo mirar: comprueba la wifi.", 2000); }
         }
         return 1;
     }

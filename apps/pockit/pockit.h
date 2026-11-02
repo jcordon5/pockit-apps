@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.0.0"
+#define POCKIT_VERSION "2.1.0"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -38,5 +38,40 @@ int lectura_week(int active[7]);            /* días con lectura de lunes a domi
 void lectura_open_current(int sub);         /* abre la ficha del libro actual en una pestaña */
 int cuaderno_tasks(char out[][200], int max); /* tareas pendientes de todas las notas */
 void cuaderno_open_note(const char *path);  /* abre una nota concreta (los Apuntes de un libro) */
+
+/* Para Pockit AI: los datos de Lectura, de solo lectura. i va de 0 hasta que devuelven 0.
+ * Los libros van del abierto más recientemente al más antiguo; las marcas, de la más nueva a la más vieja. */
+typedef struct {
+    const char *title, *author, *path, *position;
+    double progress;   /* de 0 a 1; -1 si no se sabe */
+    int done, page, pages, marks, words;
+    long added, opened, completed_ts;
+} PockitBook;
+typedef struct {
+    const char *text, *note, *book, *context;   /* subrayado o palabra; nota o definición; libro; frase donde estaba la palabra */
+    long ts;
+    int word;    /* 1 si es una palabra del diccionario */
+    char state;  /* palabras: 0 por aprender, 'a' aprendida, 'q' quitada */
+} PockitMark;
+int lectura_book(int i, PockitBook *out);
+int lectura_mark(int i, PockitMark *out);
+
+/* Pockit AI (agent.c): un turno de conversación con herramientas. */
+typedef struct {
+    void (*on_step)(const char *steps, void *ctx);  /* todas las líneas «» …» hasta ahora, la última quizá en marcha */
+    void (*on_text)(const char *text, void *ctx);   /* la respuesta según llega */
+    void *ctx;
+} AgentUI;
+typedef struct {
+    char *steps;    /* líneas «» …» de lo que hizo (malloc) */
+    char *text;     /* respuesta final (malloc), o NULL si falló */
+    char err[480];  /* qué falló y qué hacer */
+    double cost;
+} AgentOut;
+/* roles[i]: 0 tú, 1 IA. Los textos de la IA pueden traer líneas «» »: se quitan antes de mandarlas. */
+int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, AgentOut *out);
+void agent_out_free(AgentOut *o);
+/* Deshace el cambio de un paso «» …<!-- deshacer:copia|nota -->». 1 si lo deshizo. */
+int agent_undo(const char *step_line);
 
 #endif

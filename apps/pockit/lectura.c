@@ -1679,3 +1679,23 @@ void lectura_open_current(int sub)
         if (!books[i].done && books[i].progress > 0) { detail = i; detail_page = 0; dtab = sub; break; }
     pockit_open(MOD_LECTURA);
 }
+
+/* ---------- lo que Lectura le da a Pockit AI (solo lectura; apunta a la memoria de este módulo) ---------- */
+int lectura_book(int i, PockitBook *out)
+{
+    ensure_data();
+    if (i < 0 || i >= nbooks) return 0;
+    Book *b = &books[i];
+    *out = (PockitBook){ b->title, b->author, b->path, b->position, b->progress, b->done, b->page, b->pages,
+                         b->marks, b->words, b->added, b->opened, b->completed_ts };
+    return 1;
+}
+
+int lectura_mark(int i, PockitMark *out)
+{
+    ensure_data();
+    if (i < 0 || i >= nmarks) return 0;
+    Mark *m = &marks[i];
+    *out = (PockitMark){ m->text, m->note ? m->note : "", m->book, m->extra ? m->extra : "", m->ts, m->word, vstate[i] };
+    return 1;
+}

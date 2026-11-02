@@ -5,9 +5,9 @@
       "id": "pockit",
       "file": "Pockit.app",
       "title": "Pockit",
-      "version": "2.0.0",
-      "summary": "Tu centro de lectura: Lectura con IA, Cuaderno, chat, Fondos y Ajustes",
-      "description": "Una sola app con todo: tus estadísticas y libros, «Dónde voy» (resumen sin destripes), personajes, explicaciones de subrayados y apuntes; el Cuaderno de notas y tareas; el chat de IA; los fondos de reposo y los ajustes. Funciona sin IA; con tu clave de DeepSeek, además resume y explica gastando céntimos.",
+      "version": "2.1.0",
+      "summary": "Tu centro de lectura: Lectura, Cuaderno, Pockit AI, Fondos y Ajustes",
+      "description": "Una sola app con todo: tus estadísticas y libros, «Dónde voy» (resumen sin destripes), personajes, explicaciones de subrayados y apuntes; el Cuaderno de notas y tareas; Pockit AI, un asistente que mira tus libros, notas y tareas, apunta cosas y busca en internet (opcional: funciona todo sin ella); los fondos de reposo y los ajustes. Avisa cuando hay una versión nueva y se actualiza desde el propio lector.",
       "needsKey": true,
       "shot": "pockit-inicio",
       "replaces": [

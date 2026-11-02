@@ -3,3 +3,4 @@ dist/
 emulator/rt/
 *.o
 .DS_Store
+emulator/out/
