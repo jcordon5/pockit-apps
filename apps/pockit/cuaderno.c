@@ -1,8 +1,10 @@
 /*
  * Cuaderno: notas en Markdown para PocketBook, al estilo de Notas del iPhone.
  *
- * Cada nota es un archivo .md en Notas/ del lector, así que se pueden leer y editar
- * desde el ordenador (y desde Cliply), y lo que copie la IA se pega tal cual.
+ * Cada nota es un archivo .md en Notas/ (en la carpeta de tus datos: el lector o Dropbox,
+ * ver datos.c), así que se pueden leer y editar desde el ordenador.
+ * Una #palabra en cualquier sitio de la nota es una etiqueta: arriba de la lista salen
+ * las etiquetas para filtrar, y la de un libro (#niebla) enlaza la nota con su ficha.
  * Se entiende: # títulos, **negrita**, *cursiva*, listas (- y 1.), tareas (- [ ] / - [x])
  * y citas (>). La nota se pinta sobre papel pautado; tocar una línea la edita con el
  * teclado del sistema y tocar la casilla de una tarea la marca.
@@ -47,7 +49,6 @@ static void on_crash(int sig)
     raise(sig);
 }
 
-#define NOTES_DIR FLASHDIR "/Notas"
 #define MAX_NOTES 300
 #define MAX_LINES 3000
 #define LINE_MAX 2048
@@ -65,9 +66,15 @@ static ifont *f_title, *f_head, *f_body, *f_bold, *f_ital, *f_boldital, *f_small
 static int W, H;
 
 /* ---------- datos ---------- */
-typedef struct { char path[512]; char title[256]; char preview[256]; time_t mtime; } NoteInfo;
-static NoteInfo notes[MAX_NOTES];
-static int nnotes;
+typedef struct { char path[512]; char title[256]; char preview[256]; char tags[200]; time_t mtime; } NoteInfo;
+static NoteInfo all_notes[MAX_NOTES], notes[MAX_NOTES];   /* todas y las que se ven (con el filtro) */
+static int nall, nnotes;
+static char filter[64];                                    /* etiqueta elegida, sin #, o vacía */
+typedef struct { char tag[48]; int n; } TagCount;
+static TagCount tagc[100];
+static int ntagc;
+
+static const char *notes_dir(void) { static char d[700]; pockit_path(d, sizeof d, "Notas"); return d; }
 
 static char *lines[MAX_LINES];
 static int nlines;
@@ -75,7 +82,7 @@ static char cur_path[512];
 static int line_y0[MAX_LINES], line_y1[MAX_LINES];   /* dónde quedó cada línea en pantalla */
 static int scroll_row, total_rows;
 
-static enum { LIST, NOTE } screen = LIST;
+static enum { LIST, NOTE, TAGS } screen = LIST;
 static int shown_once;
 
 /* Sin destello salvo la primera vez: el usuario no quiere un parpadeo por toque. */
@@ -129,36 +136,64 @@ static int by_date(const void *a, const void *b)
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
+static int has_tag(const NoteInfo *n, const char *tag)
+{
+    char t[200], *save = NULL;
+    snprintf(t, sizeof t, "%s", n->tags);
+    for (char *w = strtok_r(t, " ", &save); w; w = strtok_r(NULL, " ", &save)) if (pockit_tag_matches(w + 1, tag)) return 1;
+    return 0;
+}
+
+static int by_count(const void *a, const void *b) { return ((const TagCount *)b)->n - ((const TagCount *)a)->n; }
+
+/* Lee todas las notas (título, vista previa y etiquetas) y deja en notes[] las del filtro. */
 static void scan_notes(void)
 {
-    mkdir(NOTES_DIR, 0755);
-    nnotes = 0;
-    DIR *d = opendir(NOTES_DIR);
-    if (!d) return;
+    nall = 0;
+    ntagc = 0;
+    DIR *d = opendir(notes_dir());
+    if (!d) { nnotes = 0; return; }
     struct dirent *e;
-    while ((e = readdir(d)) && nnotes < MAX_NOTES) {
+    while ((e = readdir(d)) && nall < MAX_NOTES) {
         size_t l = strlen(e->d_name);
         if (e->d_name[0] == '.' || l < 4 || strcmp(e->d_name + l - 3, ".md")) continue;
-        NoteInfo *n = &notes[nnotes];
-        snprintf(n->path, sizeof n->path, NOTES_DIR "/%s", e->d_name);
+        NoteInfo *n = &all_notes[nall];
+        snprintf(n->path, sizeof n->path, "%s/%s", notes_dir(), e->d_name);
         struct stat st;
         if (stat(n->path, &st)) continue;
         n->mtime = st.st_mtime;
-        n->title[0] = n->preview[0] = 0;
+        n->title[0] = n->preview[0] = n->tags[0] = 0;
         FILE *f = fopen(n->path, "r");
-        char buf[LINE_MAX];
+        char buf[LINE_MAX], tg[16][48];
         while (f && fgets(buf, sizeof buf, f)) {
             trim_nl(buf);
+            int k = pockit_tags(buf, tg, 16);
+            for (int i = 0; i < k; i++) {
+                char one[52];
+                snprintf(one, sizeof one, "#%s ", tg[i]);
+                if (strstr(n->tags, one) || strlen(n->tags) + strlen(one) >= sizeof n->tags) continue;
+                strcat(n->tags, one);
+                int j = 0;
+                while (j < ntagc && strcmp(tagc[j].tag, tg[i])) j++;
+                if (j == ntagc && ntagc < 100) { snprintf(tagc[ntagc].tag, 48, "%s", tg[i]); tagc[ntagc++].n = 0; }
+                if (j < ntagc) tagc[j].n++;
+            }
+            if (k && buf[0] == '#' && buf[1] != '#' && buf[1] != ' ') continue;   /* una línea solo de etiquetas no es la vista previa */
             if (!*skip_md_prefix(buf)) continue;
             if (!n->title[0]) plain(buf, n->title, sizeof n->title);
-            else { plain(buf, n->preview, sizeof n->preview); break; }
+            else if (!n->preview[0]) plain(buf, n->preview, sizeof n->preview);
         }
         if (f) fclose(f);
+        size_t tl = strlen(n->tags);
+        if (tl) n->tags[tl - 1] = 0;
         if (!n->title[0]) snprintf(n->title, sizeof n->title, "Nota nueva");
-        nnotes++;
+        nall++;
     }
     closedir(d);
-    qsort(notes, nnotes, sizeof *notes, by_date);
+    qsort(all_notes, nall, sizeof *all_notes, by_date);
+    qsort(tagc, ntagc, sizeof *tagc, by_count);
+    nnotes = 0;
+    for (int i = 0; i < nall; i++) if (!filter[0] || has_tag(&all_notes[i], filter)) notes[nnotes++] = all_notes[i];
 }
 
 static void free_lines(void) { for (int i = 0; i < nlines; i++) free(lines[i]); nlines = 0; }
@@ -473,7 +508,7 @@ static void draw_keyboard(void)
     }
 }
 
-static const char *FMT[] = { "☐", "•", "1.", "Título", "Negrita", "Quitar", "Listo" };
+static const char *FMT[] = { "Tarea", "Lista", "1.", "Título", "Negrita", "Quitar", "Listo" };
 #define NFMT 7
 
 static void draw_format_bar(void)
@@ -483,12 +518,12 @@ static void draw_format_bar(void)
     DrawLine(0, y, W, y, 0x999999);
     int bw = W / NFMT;
     for (int i = 0; i < NFMT; i++) {
-        SetFont(i == NFMT - 1 ? f_smallb : (i < 3 ? f_head : f_small), BLACK);
+        SetFont(i == NFMT - 1 ? f_smallb : i == 2 ? f_head : f_small, BLACK);
         DrawTextRect(i * bw, y, bw, FMT_H, FMT[i], ALIGN_CENTER | VALIGN_MIDDLE);
     }
 }
 
-static const char *NOTE_TOOLS[] = { "✎ Escribir", "☐ Tarea", "• Lista", "Borrar" };
+static const char *NOTE_TOOLS[] = { "Escribir", "+ Tarea", "+ Punto", "Borrar" };
 
 static void draw_doc(void)
 {
@@ -797,40 +832,84 @@ static void edit_doc_tap(int x, int y)
 
 /* ---------- lista de notas ---------- */
 #define ROW_H 150
-#define LIST_TOP 230
+#define CHIPS_Y 236
+#define CHIP_H 60
+static int list_top = 240;
+static int chip_x0[24], chip_x1[24], chip_y[24], chip_kind[24], nchips;   /* kind: -1 todas, -2 más, si no la etiqueta */
 
-static int list_rows(void) { return (H - LIST_TOP - 40) / ROW_H; }
+static int list_rows(void) { return (H - list_top - 40) / ROW_H; }
+
+/* Las etiquetas para filtrar, de la más usada a la menos, en dos filas como mucho;
+ * si no caben, «Más ›» abre la lista entera. Devuelve dónde empieza la lista. */
+static int layout_chips(int draw)
+{
+    nchips = 0;
+    if (!ntagc) return CHIPS_Y;
+    int order[101], no = 0, fi = -1;
+    order[no++] = -1;
+    for (int i = 0; i < ntagc; i++) if (filter[0] && !strcmp(tagc[i].tag, filter)) fi = i;
+    if (fi >= 0) order[no++] = fi;   /* la elegida, siempre a la vista */
+    for (int i = 0; i < ntagc; i++) if (i != fi) order[no++] = i;
+    SetFont(f_small, BLACK);
+    int more_w = StringWidth("Más  ›") + 44, x = M, y = CHIPS_Y, row = 0;
+    for (int k = 0; k < no && nchips < 23; k++) {
+        char label[60];
+        int kind = order[k];
+        if (kind < 0) snprintf(label, sizeof label, "Todas");
+        else snprintf(label, sizeof label, "#%s", tagc[kind].tag);
+        int w = StringWidth(label) + 44;
+        if (w > W - 2 * M - more_w - 16) w = W - 2 * M - more_w - 16;
+        int rest = k < no - 1;
+        if (x + w > W - M || (row == 1 && rest && x + w + 16 + more_w > W - M)) {
+            if (row == 0 && x + w > W - M) { row = 1; x = M; y += CHIP_H + 14; k--; continue; }
+            snprintf(label, sizeof label, "Más  ›");
+            kind = -2;
+            w = more_w;
+            k = no;
+        }
+        int on = (kind == -1 && !filter[0]) || (kind >= 0 && !strcmp(tagc[kind].tag, filter));
+        if (draw) {
+            if (on) FillArea(x, y, w, CHIP_H, BLACK); else DrawRect(x, y, w, CHIP_H, SOFT);
+            SetFont(f_small, on ? WHITE : BLACK);
+            DrawTextRect(x + 10, y, w - 20, CHIP_H, label, ALIGN_CENTER | VALIGN_MIDDLE | DOTS);
+        }
+        chip_x0[nchips] = x; chip_x1[nchips] = x + w; chip_y[nchips] = y; chip_kind[nchips] = kind; nchips++;
+        x += w + 16;
+    }
+    return y + CHIP_H + 34;
+}
 
 static void draw_list(void)
 {
     trace("pinto lista");
     ClearScreen();
-    SetFont(f_small, SOFT);
-    DrawString(M - 20, 10, "‹ Pockit");
+    pockit_back();
     SetFont(f_title, BLACK);
-    DrawString(M, 60, "Notas");
-    SetFont(f_title, BLACK);
-    DrawTextRect(W - M - 120, 40, 120, 100, "+", ALIGN_RIGHT | VALIGN_MIDDLE);
-    char cnt[40];
-    snprintf(cnt, sizeof cnt, nnotes == 1 ? "1 nota" : "%d notas", nnotes);
+    DrawString(M, 110, "Notas");
+    DrawTextRect(W - M - 140, 90, 140, 100, "+", ALIGN_RIGHT | VALIGN_MIDDLE);
+    char cnt[120];
+    snprintf(cnt, sizeof cnt, "%d nota%s%s%s", nnotes, nnotes == 1 ? "" : "s", filter[0] ? " con #" : "", filter);
     SetFont(f_small, SOFT);
-    DrawString(M, 150, cnt);
-    DrawLine(M, LIST_TOP - 20, W - M, LIST_TOP - 20, PAPER_LINE);
+    DrawString(M, 186, cnt);
+    list_top = layout_chips(1);
+    DrawLine(M, list_top - 16, W - M, list_top - 16, PAPER_LINE);
     if (!nnotes) {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, LIST_TOP + 200, W - 2 * M, 200, "Toca + para crear tu primera nota", ALIGN_CENTER);
+        DrawTextRect(M, list_top + 160, W - 2 * M, 200, "Toca + para crear tu primera nota.\n\nEscribe #algo en una nota para etiquetarla.", ALIGN_CENTER);
     }
     for (int k = 0; k < list_rows() && list_scroll + k < nnotes; k++) {
         NoteInfo *n = &notes[list_scroll + k];
-        int y = LIST_TOP + k * ROW_H;
-        char ds[40];
+        int y = list_top + k * ROW_H;
+        char ds[40], sub[500];
         date_str(n->mtime, ds, sizeof ds);
         SetFont(f_bold, BLACK);
         DrawTextRect(M, y + 10, W - 2 * M, 50, n->title, ALIGN_LEFT | DOTS);
         SetFont(f_small, SOFT);
         int dw = StringWidth(ds);
         DrawString(M, y + 72, ds);
-        DrawTextRect(M + dw + 24, y + 72, W - 2 * M - dw - 24, 44, n->preview[0] ? n->preview : "Sin más texto", ALIGN_LEFT | DOTS);
+        if (n->tags[0]) snprintf(sub, sizeof sub, "%s  ·  %s", n->tags, n->preview[0] ? n->preview : "");
+        else snprintf(sub, sizeof sub, "%s", n->preview[0] ? n->preview : "Sin más texto");
+        DrawTextRect(M + dw + 24, y + 72, W - 2 * M - dw - 24, 44, sub, ALIGN_LEFT | DOTS);
         DrawLine(M, y + ROW_H - 10, W - M, y + ROW_H - 10, PAPER_LINE);
     }
     if (nnotes > list_rows()) {
@@ -840,6 +919,49 @@ static void draw_list(void)
         DrawTextRect(0, H - 60, W, 40, pg, ALIGN_CENTER);
     }
     refresh();
+}
+
+/* todas las etiquetas, para cuando no caben arriba */
+#define TAG_ROW 96
+#define TAGS_TOP 240
+static int tags_scroll;
+static int tags_rows(void) { return (H - TAGS_TOP - 60) / TAG_ROW; }
+
+static void draw_tags(void)
+{
+    ClearScreen();
+    SetFont(f_head, BLACK);
+    DrawString(M - 20, 42, "‹ Notas");
+    SetFont(f_title, BLACK);
+    DrawString(M, 110, "Etiquetas");
+    for (int k = 0; k < tags_rows() && tags_scroll + k < ntagc; k++) {
+        TagCount *t = &tagc[tags_scroll + k];
+        int y = TAGS_TOP + k * TAG_ROW;
+        char l[60], n[32];
+        snprintf(l, sizeof l, "#%s", t->tag);
+        snprintf(n, sizeof n, t->n == 1 ? "1 nota" : "%d notas", t->n);
+        SetFont(!strcmp(t->tag, filter) ? f_bold : f_body, BLACK);
+        DrawTextRect(M, y, W - 2 * M - 200, TAG_ROW - 10, l, ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+        SetFont(f_small, SOFT);
+        DrawTextRect(W - M - 200, y, 200, TAG_ROW - 10, n, ALIGN_RIGHT | VALIGN_MIDDLE);
+        DrawLine(M, y + TAG_ROW - 6, W - M, y + TAG_ROW - 6, PAPER_LINE);
+    }
+    if (ntagc > tags_rows()) {
+        char pg[32];
+        snprintf(pg, sizeof pg, "%d / %d", tags_scroll / tags_rows() + 1, (ntagc + tags_rows() - 1) / tags_rows());
+        SetFont(f_small, SOFT);
+        DrawTextRect(0, H - 60, W, 40, pg, ALIGN_CENTER);
+    }
+    refresh();
+}
+
+static void set_filter(const char *tag)
+{
+    snprintf(filter, sizeof filter, "%s", tag ? tag : "");
+    list_scroll = 0;
+    screen = LIST;
+    scan_notes();
+    draw_list();
 }
 
 /* ---------- acciones ---------- */
@@ -861,10 +983,10 @@ static void back_to_list(void)
 
 static void new_note(void)
 {
-    char path[512];
-    snprintf(path, sizeof path, NOTES_DIR "/%ld.md", (long)time(NULL));
+    char path[1100];
+    snprintf(path, sizeof path, "%s/%ld.md", notes_dir(), (long)time(NULL));
     FILE *f = fopen(path, "w");
-    if (f) { fputs("# \n", f); fclose(f); }
+    if (f) { fputs("# \n", f); if (filter[0]) fprintf(f, "#%s\n", filter); fclose(f); }   /* viendo #niebla, la nota nueva ya la lleva */
     load_note(path);
     if (!nlines) lines[nlines++] = strdup("# ");
     screen = NOTE;
@@ -938,13 +1060,26 @@ static void note_tap(int x, int y)
 
 static void list_tap(int x, int y)
 {
-    if (y < 50 && x < W / 3) { CloseApp(); return; }
-    if (y < LIST_TOP - 20) {
-        if (x > W - M - 160) new_note();
+    if (pockit_back_hit(x, y)) { CloseApp(); return; }
+    for (int i = 0; i < nchips; i++)
+        if (x >= chip_x0[i] && x < chip_x1[i] + 8 && y >= chip_y[i] - 7 && y < chip_y[i] + CHIP_H + 7) {
+            if (chip_kind[i] == -2) { screen = TAGS; tags_scroll = 0; draw_tags(); }
+            else set_filter(chip_kind[i] < 0 ? NULL : tagc[chip_kind[i]].tag);
+            return;
+        }
+    if (y < list_top - 16) {
+        if (x > W - M - 180 && y > 80) new_note();
         return;
     }
-    int k = (y - LIST_TOP) / ROW_H;
+    int k = (y - list_top) / ROW_H;
     if (k >= 0 && list_scroll + k < nnotes) open_note(notes[list_scroll + k].path);
+}
+
+static void tags_tap(int x, int y)
+{
+    if (y < 100 && x < W / 3) { screen = LIST; draw_list(); return; }
+    int k = (y - TAGS_TOP) / TAG_ROW;
+    if (y >= TAGS_TOP && k < tags_rows() && tags_scroll + k < ntagc) set_filter(tagc[tags_scroll + k].tag);
 }
 
 static int handler(int type, int par1, int par2)
@@ -970,7 +1105,7 @@ static int handler(int type, int par1, int par2)
         scan_notes();
         break;
     case EVT_SHOW:
-        if (screen == NOTE) draw_note(); else draw_list();
+        if (screen == NOTE) draw_note(); else if (screen == TAGS) draw_tags(); else draw_list();
         break;
     case EVT_POINTERDOWN:
         if (screen == NOTE && editing_mode) {
@@ -995,22 +1130,26 @@ static int handler(int type, int par1, int par2)
         }
         return 1;
     case EVT_POINTERUP:
-        if (screen == NOTE) note_tap(par1, par2); else list_tap(par1, par2);
+        if (screen == NOTE) note_tap(par1, par2); else if (screen == TAGS) tags_tap(par1, par2); else list_tap(par1, par2);
         return 1;
     case EVT_KEYPRESS:
         if (par1 == IV_KEY_BACK || par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
             if (screen == NOTE && editing_mode) stop_editing();
-            else if (screen == NOTE) back_to_list(); else CloseApp();
+            else if (screen == NOTE) back_to_list();
+            else if (screen == TAGS) { screen = LIST; draw_list(); }
+            else CloseApp();
             return 1;
         }
         if (par1 == IV_KEY_NEXT || par1 == IV_KEY_NEXT2 || par1 == IV_KEY_DOWN || par1 == IV_KEY_RIGHT) {
             if (screen == NOTE && !editing_mode && scroll_row + rows_on_page() < total_rows) { scroll_row += rows_on_page(); draw_note(); }
             else if (screen == LIST && list_scroll + list_rows() < nnotes) { list_scroll += list_rows(); draw_list(); }
+            else if (screen == TAGS && tags_scroll + tags_rows() < ntagc) { tags_scroll += tags_rows(); draw_tags(); }
             return 1;
         }
         if (par1 == IV_KEY_PREV || par1 == IV_KEY_PREV2 || par1 == IV_KEY_UP || par1 == IV_KEY_LEFT) {
             if (screen == NOTE && !editing_mode && scroll_row > 0) { scroll_row -= rows_on_page(); if (scroll_row < 0) scroll_row = 0; draw_note(); }
             else if (screen == LIST && list_scroll > 0) { list_scroll -= list_rows(); if (list_scroll < 0) list_scroll = 0; draw_list(); }
+            else if (screen == TAGS && tags_scroll > 0) { tags_scroll -= tags_rows(); if (tags_scroll < 0) tags_scroll = 0; draw_tags(); }
             return 1;
         }
         break;
@@ -1039,24 +1178,13 @@ void cuaderno_args(int argc, char *argv[])
 int cuaderno_handler(int type, int par1, int par2) { return handler(type, par1, par2); }
 
 /* ---------- lo que el Cuaderno le da al resto de Pockit ---------- */
-int cuaderno_tasks(char out[][200], int max)
+void cuaderno_open_tag(const char *tag)
 {
+    snprintf(filter, sizeof filter, "%s", tag);
+    list_scroll = 0;
+    screen = LIST;
     scan_notes();
-    int n = 0;
-    char buf[LINE_MAX];
-    for (int i = 0; i < nnotes && n < max; i++) {
-        FILE *f = fopen(notes[i].path, "r");
-        while (f && n < max && fgets(buf, sizeof buf, f)) {
-            trim_nl(buf);
-            const char *t = buf;
-            while (*t == ' ') t++;
-            if (strncmp(t, "- [ ] ", 6) || !t[6]) continue;
-            plain(t, out[n], 200);
-            n++;
-        }
-        if (f) fclose(f);
-    }
-    return n;
+    pockit_open(MOD_CUADERNO);
 }
 
 void cuaderno_open_note(const char *path)

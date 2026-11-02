@@ -6,9 +6,12 @@
  * como pasos en gris («» Buscado «Gregor» en «La metamorfosis»: 4 resultados»); si un paso
  * cambió una nota, se puede tocar para deshacerlo.
  *
- * Cada chat es un archivo .md en Chats/ ("### Tú" / "### IA" separan los mensajes), así
- * que se pueden leer en el ordenador. «Uso y ajustes» enseña el modelo, la clave, el gasto
- * y los últimos errores.
+ * Cada chat es un archivo .md en Chats/ ("### Tú" / "### IA" separan los mensajes), en la
+ * carpeta de tus datos (el lector o Dropbox), así que se pueden leer en el ordenador.
+ * «Uso y ajustes» enseña el modelo, la clave, el gasto y los últimos errores.
+ *
+ * Escribir en tinta cuesta: un chat nuevo enseña ideas que se mandan de un toque, y lo que
+ * escribes queda a la vista antes de enviarlo. El chat se pasa con los botones o arrastrando.
  */
 #include "inkview.h"
 #include <stdio.h>
@@ -24,8 +27,8 @@
 /* en Pockit, «cerrar» un módulo es volver al Inicio */
 #define CloseApp pockit_home
 
-#define CHATS_DIR FLASHDIR "/Chats"
-#define NOTES_DIR FLASHDIR "/Notas"
+static const char *chats_dir(void) { static char d[700]; pockit_path(d, sizeof d, "Chats"); return d; }
+static const char *notes_dir(void) { static char d[700]; pockit_path(d, sizeof d, "Notas"); return d; }
 
 #define MAX_CHATS 300
 #define MAX_MSGS 400
@@ -35,36 +38,40 @@
 #define LH 58
 #define BASE 14
 #define TOP_BAR 130
-#define TOOLBAR 120
+#define TOOLBAR 120   /* la caja de escribir, vacía; con un borrador crece */
 
 static ifont *f_title, *f_head, *f_body, *f_bold, *f_ital, *f_boldital, *f_small, *f_smallb, *f_h1, *f_h2, *f_mono;
 static int W, H;
 static double chat_cost;   /* dólares gastados en el chat abierto */
 
-typedef struct { char path[512]; char title[256]; char preview[256]; time_t mtime; } ChatInfo;
+typedef struct { char path[1024]; char title[256]; char preview[256]; time_t mtime; } ChatInfo;
 static ChatInfo chats[MAX_CHATS];
 static int nchats, list_scroll;
 
 typedef struct { int ia; char *text; int row0, row1; } Msg;
 static Msg msgs[MAX_MSGS];
 static int nmsgs;
-static char cur_path[512], cur_title[256];
+static char cur_path[1024], cur_title[256];
 static int scroll_row, total_rows;
 
 static enum { LIST, CHAT, NOKEY, USAGE } screen = LIST;
 static int shown_once;
-static char kbd[4096];
+static char kbd[4096], draft[4096];   /* lo que se teclea; el borrador, a la vista hasta que se envía */
 
 static const char *MESES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
 
-/* Preguntas de un toque: escribir en tinta electrónica cuesta */
+/* Preguntas de un toque, en un chat nuevo: escribir en tinta electrónica cuesta */
 static const char *IDEAS[] = {
-    "¿Qué tareas tengo pendientes?",
     "Recuérdame qué ha pasado hasta ahora en el libro",
-    "Repasa mis subrayados de esta semana",
+    "Revisa los personajes del libro que leo: quién es quién",
+    "Hazme un examen de 5 preguntas sobre lo que llevo leído",
+    "Convierte mis subrayados de esta semana en apuntes",
+    "Repasa conmigo las palabras que consulté esta semana",
+    "¿Qué tareas tengo pendientes?",
     "¿Cómo voy de lectura este mes?",
+    "Cuéntame quién es el autor del libro que leo",
 };
-#define NIDEAS 4
+#define NIDEAS 8
 
 static void refresh(void) { POCKIT_REFRESH(shown_once); }
 static void trim_nl(char *s) { size_t n = strlen(s); while (n && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ')) s[--n] = 0; }
@@ -100,16 +107,15 @@ static int by_date(const void *a, const void *b)
 
 static void scan_chats(void)
 {
-    mkdir(CHATS_DIR, 0755);
     nchats = 0;
-    DIR *d = opendir(CHATS_DIR);
+    DIR *d = opendir(chats_dir());
     if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) && nchats < MAX_CHATS) {
         size_t l = strlen(e->d_name);
         if (e->d_name[0] == '.' || l < 4 || strcmp(e->d_name + l - 3, ".md")) continue;
         ChatInfo *c = &chats[nchats];
-        snprintf(c->path, sizeof c->path, CHATS_DIR "/%s", e->d_name);
+        snprintf(c->path, sizeof c->path, "%s/%s", chats_dir(), e->d_name);
         struct stat st;
         if (stat(c->path, &st)) continue;
         c->mtime = st.st_mtime;
@@ -197,7 +203,18 @@ static void save_chat(void)
 /* ---------- pantalla del chat ---------- */
 static MdCtx md;
 static int body_top(void) { return TOP_BAR + 10; }
-static int rows_on_page(void) { return (H - TOOLBAR - body_top()) / LH; }
+
+/* La caja de escribir: vacía, una línea; con borrador, hasta 4 líneas y «Enviar» al lado. */
+#define SEND_W 190
+static int draft_h(void)
+{
+    if (!draft[0]) return 0;
+    SetFont(f_body, BLACK);
+    int h = TextRectHeight(W - 2 * M - 60 - SEND_W, draft, 0);
+    return h > 4 * 46 ? 4 * 46 : h;
+}
+static int toolbar_h(void) { int h = draft_h(); return h ? h + 70 : TOOLBAR; }
+static int rows_on_page(void) { return (H - toolbar_h() - body_top()) / LH; }
 
 /* Pasos que se pueden deshacer, para los toques: fila, mensaje y dónde empieza la línea */
 typedef struct { int row, msg; long off; } UndoHit;
@@ -206,7 +223,7 @@ static int nundo;
 
 static void setup_md(void)
 {
-    md = (MdCtx){ f_body, f_bold, f_ital, f_boldital, f_h1, f_h2, f_mono, M, W - M, body_top(), H - TOOLBAR, LH, BASE, scroll_row, SOFT };
+    md = (MdCtx){ f_body, f_bold, f_ital, f_boldital, f_h1, f_h2, f_mono, M, W - M, body_top(), H - toolbar_h(), LH, BASE, scroll_row, SOFT };
 }
 
 /* Un paso del agente: gris y pequeño; «Deshacer» a la derecha si cambió una nota. */
@@ -271,14 +288,42 @@ static int layout_chat(int draw)
     return row;
 }
 
-static void draw_toolbar(const char *main_label)
+static void draw_toolbar(const char *status)
 {
-    int y = H - TOOLBAR;
-    FillArea(0, y, W, TOOLBAR, WHITE);
+    int th = toolbar_h(), y = H - th;
+    FillArea(0, y, W, th, WHITE);
     DrawLine(0, y, W, y, BLACK);
-    for (int i = 0; i < 2; i++) DrawRect(M + i, y + 22 + i, W - 2 * M - 2 * i, TOOLBAR - 44 - 2 * i, BLACK);
+    if (draft[0] && !status) {   /* el borrador entero, para leerlo antes de mandarlo */
+        int bh = th - 40;
+        for (int i = 0; i < 2; i++) DrawRect(M + i, y + 20 + i, W - 2 * M - SEND_W - 20 - 2 * i, bh - 2 * i, BLACK);
+        SetFont(f_body, BLACK);
+        DrawTextRect(M + 30, y + 20, W - 2 * M - 60 - SEND_W, bh, draft, ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+        FillArea(W - M - SEND_W, y + 20, SEND_W, bh, BLACK);
+        SetFont(f_bold, WHITE);
+        DrawTextRect(W - M - SEND_W, y + 20, SEND_W, bh, "Enviar", ALIGN_CENTER | VALIGN_MIDDLE);
+        return;
+    }
+    for (int i = 0; i < 2; i++) DrawRect(M + i, y + 22 + i, W - 2 * M - 2 * i, th - 44 - 2 * i, BLACK);
     SetFont(f_head, SOFT);
-    DrawTextRect(M + 30, y + 22, W - 2 * M - 60, TOOLBAR - 44, main_label, ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+    DrawTextRect(M + 30, y + 22, W - 2 * M - 60, th - 44, status ? status : "Pídele algo a Pockit AI…", ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+}
+
+/* Chat nuevo: ideas que se mandan de un toque */
+#define IDEA_H 104
+static int ideas_top(void) { return body_top() + 90; }
+
+static void draw_ideas(void)
+{
+    SetFont(f_bold, BLACK);
+    DrawString(M, body_top() + 20, "¿Qué le puedes pedir a Pockit AI?");
+    for (int k = 0; k < NIDEAS; k++) {
+        int y = ideas_top() + k * IDEA_H;
+        if (y + IDEA_H > H - toolbar_h()) break;
+        DrawRect(M, y, W - 2 * M, IDEA_H - 16, PAPER_LINE);
+        DrawRect(M + 1, y + 1, W - 2 * M - 2, IDEA_H - 18, PAPER_LINE);
+        SetFont(f_body, BLACK);
+        DrawTextRect(M + 28, y, W - 2 * M - 56, IDEA_H - 16, IDEAS[k], ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+    }
 }
 
 static void draw_chat_body(const char *status)
@@ -286,23 +331,31 @@ static void draw_chat_body(const char *status)
     ClearScreen();
     SetFont(f_head, BLACK);
     DrawString(M - 20, 42, "‹ Chats");
+    if (!nmsgs) {   /* chat nuevo */
+        SetFont(f_small, SOFT);
+        DrawTextRect(W / 4, 52, W / 2, 40, "Chat nuevo", ALIGN_CENTER);
+        DrawLine(0, TOP_BAR, W, TOP_BAR, PAPER_LINE);
+        draw_ideas();
+        draw_toolbar(status);
+        return;
+    }
     SetFont(f_small, SOFT);
-    DrawTextRect(W / 3, 34, W / 3, 40, cur_title, ALIGN_CENTER | DOTS);
+    DrawTextRect(W / 4, 34, W / 2, 40, cur_title, ALIGN_CENTER | DOTS);
     char cost[120], mny[32];
     ai_money(chat_cost, mny, sizeof mny);
     total_rows = layout_chat(0);
-    int pages = (total_rows + rows_on_page() - 1) / rows_on_page();
-    if (pages > 1)   /* la página va con el coste, debajo del título: así no choca con «Borrar» */
-        snprintf(cost, sizeof cost, "%s · %s · pág. %d de %d", AI_MODELS[ai_model].name, mny, scroll_row / rows_on_page() + 1, pages);
+    int rp = rows_on_page(), pages = (total_rows + rp - 1) / rp;
+    if (pages > 1)   /* la página va con el coste, debajo del título */
+        snprintf(cost, sizeof cost, "%s · %s · pág. %d de %d", AI_MODELS[ai_model].name, mny, (scroll_row + rp - 1) / rp + 1 > pages ? pages : (scroll_row + rp - 1) / rp + 1, pages);
     else
         snprintf(cost, sizeof cost, "%s · %s", AI_MODELS[ai_model].name, mny);
     SetFont(f_small, SOFT);
     DrawTextRect(W / 4, 76, W / 2, 40, cost, ALIGN_CENTER);
     SetFont(f_head, BLACK);
-    DrawString(W - M + 20 - StringWidth("Borrar"), 42, "Borrar");
+    DrawString(W - M + 20 - StringWidth("Opciones"), 42, "Opciones");
     DrawLine(0, TOP_BAR, W, TOP_BAR, PAPER_LINE);
     layout_chat(1);
-    draw_toolbar(status ? status : "Pídele algo a Pockit AI…");
+    draw_toolbar(status);
 }
 
 static void draw_chat(void) { draw_chat_body(NULL); refresh(); }
@@ -395,38 +448,35 @@ static void ask(void)
 
 /* ---------- lista de chats ---------- */
 #define ROW_H 150
-static int ideas_top(void) { return 205; }
-static int idea_h(void) { return 110; }
-static int list_top(void) { return ideas_top() + 2 * idea_h() + 50; }
+#define NEW_Y 250
+#define NEW_H 96
+static int list_top(void) { return NEW_Y + NEW_H + 40; }
 static int list_rows(void) { return (H - list_top() - 40) / ROW_H; }
+static int gear_x(void) { return W - M - 90; }
 
 static void draw_list(void)
 {
     ClearScreen();
-    SetFont(f_small, SOFT);
-    DrawString(M - 20, 10, "‹ Pockit");
+    pockit_back();
     SetFont(f_title, BLACK);
-    DrawString(M, 50, "Pockit AI");
-    DrawTextRect(W - M - 120, 30, 120, 100, "+", ALIGN_RIGHT | VALIGN_MIDDLE);
+    DrawString(M, 110, "Pockit AI");
+    /* Uso y ajustes: el icono de Ajustes de Pockit, a la derecha del título */
+    ibitmap *g = pockit_icon(MOD_AJUSTES);
+    if (g) { StretchBitmap(gear_x(), 100, 90, 90, g, 0); free(g); }
+    double mon;
+    ai_spent(&mon);
     char cnt[200], mny[32];
-    ai_money(typical(ai_model), mny, sizeof mny);
-    snprintf(cnt, sizeof cnt, "%s · ≈ %s por consulta · Uso y ajustes  ›", AI_MODELS[ai_model].name, mny);
+    ai_money(mon, mny, sizeof mny);
+    snprintf(cnt, sizeof cnt, "%s · %s este mes", AI_MODELS[ai_model].name, mny);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, 135, W - 2 * M, 40, cnt, ALIGN_LEFT | DOTS);
-    /* ideas: 2 × 2 */
-    int gw = (W - 2 * M - 20) / 2;
-    SetFont(f_small, BLACK);
-    for (int k = 0; k < NIDEAS; k++) {
-        int x = M + (k % 2) * (gw + 20), y = ideas_top() + (k / 2) * idea_h();
-        DrawRect(x, y, gw, idea_h() - 16, PAPER_LINE);
-        DrawRect(x + 1, y + 1, gw - 2, idea_h() - 18, PAPER_LINE);
-        DrawTextRect(x + 20, y, gw - 40, idea_h() - 16, IDEAS[k], ALIGN_LEFT | VALIGN_MIDDLE);
-    }
-    DrawLine(M, list_top() - 20, W - M, list_top() - 20, PAPER_LINE);
+    DrawTextRect(M, 186, W - 2 * M - 120, 40, cnt, ALIGN_LEFT | DOTS);
+    FillArea(M, NEW_Y, W - 2 * M, NEW_H, BLACK);
+    SetFont(f_bold, WHITE);
+    DrawTextRect(M, NEW_Y, W - 2 * M, NEW_H, "Nuevo chat", ALIGN_CENTER | VALIGN_MIDDLE);
     if (!nchats) {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, list_top() + 120, W - 2 * M, 300,
-                     "Toca + o una idea para empezar.\n\nPockit AI puede mirar tus libros, subrayados, notas y tareas, apuntar cosas en el Cuaderno y buscar en internet.",
+        DrawTextRect(M, list_top() + 120, W - 2 * M, 400,
+                     "Pockit AI mira tus libros, subrayados, notas y tareas, te recuerda lo leído sin destripes, apunta cosas en el Cuaderno y busca en internet.\n\nToca «Nuevo chat» para ver qué le puedes pedir.",
                      ALIGN_CENTER);
     }
     for (int k = 0; k < list_rows() && list_scroll + k < nchats; k++) {
@@ -442,19 +492,24 @@ static void draw_list(void)
         DrawTextRect(M + dw + 24, y + 72, W - 2 * M - dw - 24, 44, c->preview, ALIGN_LEFT | DOTS);
         DrawLine(M, y + ROW_H - 10, W - M, y + ROW_H - 10, PAPER_LINE);
     }
+    if (nchats > list_rows()) {
+        char pg[32];
+        snprintf(pg, sizeof pg, "%d / %d", list_scroll / list_rows() + 1, (nchats + list_rows() - 1) / list_rows());
+        SetFont(f_small, SOFT);
+        DrawTextRect(0, H - 50, W, 40, pg, ALIGN_CENTER);
+    }
     refresh();
 }
 
 static void draw_nokey(void)
 {
     ClearScreen();
-    SetFont(f_small, SOFT);
-    DrawString(M - 20, 10, "‹ Pockit");
+    pockit_back();
     SetFont(f_title, BLACK);
-    DrawString(M, 60, "Pockit AI");
+    DrawString(M, 110, "Pockit AI");
     SetFont(f_body, BLACK);
-    DrawTextRect(M, 220, W - 2 * M, 900,
-                 "Pockit AI es un asistente que mira tus libros, subrayados, notas y tareas, apunta cosas en el Cuaderno y busca en internet por ti.\n\n"
+    DrawTextRect(M, 240, W - 2 * M, 900,
+                 "Pockit AI es un asistente que mira tus libros, subrayados, notas y tareas, te recuerda lo leído sin destripes, apunta cosas en el Cuaderno y busca en internet por ti.\n\n"
                  "Es opcional: todo Pockit funciona sin ella. Para activarla hace falta una clave de un proveedor de IA (por ejemplo, DeepSeek: platform.deepseek.com). "
                  "Cada consulta cuesta una fracción de céntimo y siempre ves lo que gastas.\n\n"
                  "La forma fácil: pockit.yous.dev → Tu lector → Apps → IA, pega la clave y guarda.\n\n"
@@ -576,35 +631,65 @@ static void draw_usage(void)
         y += h + 16;
     }
     SetFont(f_small, SOFT);
-    snprintf(line, sizeof line, "%d chat%s guardado%s en la carpeta Chats. Mantén pulsado uno en la lista para borrarlo.", nchats, nchats == 1 ? "" : "s", nchats == 1 ? "" : "s");
+    snprintf(line, sizeof line, "%d chat%s guardado%s%s. Para renombrar o borrar uno, ábrelo y toca «Opciones».", nchats, nchats == 1 ? "" : "s", nchats == 1 ? "" : "s", pockit_dropbox() ? " en Dropbox" : "");
     DrawTextRect(M, H - 110, W - 2 * M, 90, line, ALIGN_LEFT);
     refresh();
 }
 
 /* ---------- acciones ---------- */
-static void back_to_list(void) { screen = LIST; scan_chats(); draw_list(); }
+static void back_to_list(void) { screen = LIST; draft[0] = 0; scan_chats(); draw_list(); }
 
 static void open_chat(const char *path)
 {
     load_chat(path);
     screen = CHAT;
+    draft[0] = 0;
     scroll_to_msg(nmsgs - 1);
     draw_chat();
 }
 
-static void on_question(char *s)
+static void new_chat(void)
 {
-    if (!s || !s[0]) { if (screen == CHAT) draw_chat(); else draw_list(); return; }
-    if (screen != CHAT) {   /* chat nuevo */
-        free_msgs();
-        snprintf(cur_path, sizeof cur_path, CHATS_DIR "/%ld.md", (long)time(NULL));
-        snprintf(cur_title, sizeof cur_title, "%.60s%s", s, strlen(s) > 60 ? "…" : "");
+    free_msgs();
+    cur_path[0] = cur_title[0] = 0;
+    chat_cost = 0;
+    scroll_row = 0;
+    draft[0] = 0;
+    screen = CHAT;
+    draw_chat();
+}
+
+/* Manda una pregunta: el borrador o una idea. */
+static void send(const char *q)
+{
+    if (!q || !q[0]) return;
+    if (!nmsgs) {   /* el chat nace con la primera pregunta */
+        snprintf(cur_path, sizeof cur_path, "%s/%ld.md", chats_dir(), (long)time(NULL));
+        snprintf(cur_title, sizeof cur_title, "%.60s%s", q, strlen(q) > 60 ? "…" : "");
         chat_cost = 0;
-        screen = CHAT;
     }
-    add_msg(0, s);
+    screen = CHAT;
+    add_msg(0, q);
+    draft[0] = 0;
     save_chat();
     ask();
+}
+
+/* Lo tecleado queda como borrador, a la vista, hasta que se toca «Enviar». */
+static void on_draft(char *s)
+{
+    if (s) snprintf(draft, sizeof draft, "%s", s);
+    for (char *p = draft; *p; p++) if (*p == '\r') *p = ' ';
+    size_t l = strlen(draft);
+    while (l && (draft[l - 1] == ' ' || draft[l - 1] == '\n')) draft[--l] = 0;
+    scroll_to_msg(nmsgs - 1);
+    draw_chat();
+}
+
+static void edit_draft(void)
+{
+    snprintf(kbd, sizeof kbd, "%s", draft);
+    OpenKeyboard("Pockit AI", kbd, sizeof kbd - 1, KBD_NORMAL | KBD_NOEVTSHOW, on_draft);
 }
 
 static void on_key(char *s)
@@ -619,9 +704,8 @@ static int long_pressed;
 static void on_save_answer(int button)
 {
     if (button == 1 && pending_save >= 0) {
-        mkdir(NOTES_DIR, 0755);
-        char path[512];
-        snprintf(path, sizeof path, NOTES_DIR "/%ld.md", (long)time(NULL));
+        char path[1100];
+        snprintf(path, sizeof path, "%s/%ld.md", notes_dir(), (long)time(NULL));
         FILE *f = fopen(path, "w");
         if (f) {
             const char *q = pending_save > 0 && !msgs[pending_save - 1].ia ? msgs[pending_save - 1].text : cur_title;
@@ -667,7 +751,7 @@ static void on_undo(int button)
 }
 
 static void page(int dir);
-static char delete_path[512];
+static char delete_path[1024];
 static void on_delete(int button)
 {
     if (button == 1 && delete_path[0]) { remove(delete_path); delete_path[0] = 0; back_to_list(); return; }
@@ -683,10 +767,40 @@ static void ask_delete(const char *path, const char *title)
     Dialog(ICON_QUESTION, "Borrar chat", text, "Borrar", "Cancelar", on_delete);
 }
 
+static void on_rename(char *s)
+{
+    if (s && s[0]) {
+        for (char *p = s; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+        snprintf(cur_title, sizeof cur_title, "%.120s", s);
+        save_chat();
+    }
+    draw_chat();
+}
+
+static void on_options(int button)
+{
+    if (button == 1) { snprintf(kbd, sizeof kbd, "%s", cur_title); OpenKeyboard("Nombre del chat", kbd, 200, KBD_NORMAL | KBD_NOEVTSHOW, on_rename); }
+    else if (button == 2) ask_delete(cur_path, cur_title);
+    else draw_chat();
+}
+
 static void chat_tap(int x, int y)
 {
-    if (y < TOP_BAR) { if (x < W / 3) back_to_list(); else if (x > W - M - 240) ask_delete(cur_path, cur_title); return; }
-    if (y > H - TOOLBAR) { kbd[0] = 0; OpenKeyboard("Pockit AI", kbd, sizeof kbd - 1, KBD_NORMAL | KBD_NOEVTSHOW, on_question); return; }
+    if (y < TOP_BAR) {
+        if (x < W / 3) back_to_list();
+        else if (x > W - M - 260 && nmsgs) Dialog3(ICON_QUESTION, "Chat", cur_title, "Renombrar", "Borrar", "Cancelar", on_options);
+        return;
+    }
+    if (y > H - toolbar_h()) {
+        if (draft[0] && x > W - M - SEND_W - 10) { static char q[4096]; snprintf(q, sizeof q, "%s", draft); send(q); }
+        else edit_draft();
+        return;
+    }
+    if (!nmsgs) {   /* chat nuevo: las ideas */
+        int k = (y - ideas_top()) / IDEA_H;
+        if (y >= ideas_top() && k < NIDEAS && ideas_top() + (k + 1) * IDEA_H <= H - toolbar_h()) { static char q[200]; snprintf(q, sizeof q, "%s", IDEAS[k]); send(q); }
+        return;
+    }
     setup_md();
     int row = scroll_row + (y - body_top()) / LH;
     total_rows = layout_chat(0);   /* para tener las filas de los pasos */
@@ -709,7 +823,7 @@ static void chat_tap(int x, int y)
 
 static void usage_tap(int x, int y)
 {
-    if (y < 90 && x < W / 3) { back_to_list(); return; }
+    if (y < 100 && x < W / 3) { back_to_list(); return; }
     if (y >= us_model_y && y < us_model_y + AI_NMODELS * US_ROW) {
         int m = (y - us_model_y) / US_ROW;
         if (m != ai_model) { ai_model = m; ai_save_cfg(); draw_usage(); }
@@ -723,46 +837,49 @@ static void usage_tap(int x, int y)
 
 static void list_tap(int x, int y)
 {
-    if (y < 50 && x < W / 3) { CloseApp(); return; }
-    if (y > 120 && y < ideas_top() - 10) { screen = USAGE; scan_chats(); draw_usage(); return; }
-    if (y < ideas_top()) {
-        if (x > W - M - 160) { kbd[0] = 0; OpenKeyboard("Nueva pregunta", kbd, sizeof kbd - 1, KBD_NORMAL | KBD_NOEVTSHOW, on_question); }
-        return;
-    }
-    if (y < list_top() - 20) {
-        int gw = (W - 2 * M - 20) / 2, col = x > M + gw + 10, rowi = (y - ideas_top()) / idea_h();
-        int k = rowi * 2 + col;
-        if (k >= 0 && k < NIDEAS) { static char q[200]; snprintf(q, sizeof q, "%s", IDEAS[k]); on_question(q); }
-        return;
-    }
+    if (pockit_back_hit(x, y)) { CloseApp(); return; }
+    if (y >= 90 && y < 230 && x >= gear_x() - 30) { screen = USAGE; scan_chats(); draw_usage(); return; }
+    if (y >= NEW_Y && y < NEW_Y + NEW_H) { new_chat(); return; }
     int k = (y - list_top()) / ROW_H;
-    if (k >= 0 && list_scroll + k < nchats) open_chat(chats[list_scroll + k].path);
+    if (y >= list_top() && k < list_rows() && list_scroll + k < nchats) open_chat(chats[list_scroll + k].path);
 }
 
-static void page(int dir)
+/* pasar por filas (arrastrando) o por páginas (botones y toques a los lados) */
+static void scroll_by(int rows)
 {
-    if (screen == CHAT) {
-        int rp = rows_on_page();
-        if (dir > 0 && scroll_row + rp < total_rows) scroll_row += rp;
-        else if (dir < 0 && scroll_row > 0) scroll_row = scroll_row > rp ? scroll_row - rp : 0;
-        else return;
+    if (screen == CHAT && nmsgs) {
+        int rp = rows_on_page(), max = total_rows > rp ? total_rows - rp : 0;
+        int s2 = scroll_row + rows;
+        if (s2 > max) s2 = max;
+        if (s2 < 0) s2 = 0;
+        if (s2 == scroll_row) return;
+        scroll_row = s2;
         draw_chat();
     } else if (screen == LIST) {
-        if (dir > 0 && list_scroll + list_rows() < nchats) list_scroll += list_rows();
-        else if (dir < 0 && list_scroll > 0) list_scroll = list_scroll > list_rows() ? list_scroll - list_rows() : 0;
-        else return;
+        int s2 = list_scroll + rows, max = nchats > list_rows() ? nchats - list_rows() : 0;
+        if (s2 > max) s2 = max;
+        if (s2 < 0) s2 = 0;
+        if (s2 == list_scroll) return;
+        list_scroll = s2;
         draw_list();
     }
 }
 
+static void page(int dir)
+{
+    if (screen == CHAT) scroll_by(dir * rows_on_page());
+    else if (screen == LIST) scroll_by(dir * list_rows());
+}
+
 static char *auto_question;
-static void run_auto(void) { static char q[2048]; snprintf(q, sizeof q, "%s", auto_question); auto_question = NULL; on_question(q); }
+static void run_auto(void) { static char q[2048]; snprintf(q, sizeof q, "%s", auto_question); auto_question = NULL; free_msgs(); send(q); }
 
 static void draw_current(void)
 {
     if (screen == CHAT) draw_chat(); else if (screen == NOKEY) draw_nokey(); else if (screen == USAGE) draw_usage(); else draw_list();
 }
 
+static int down_x, down_y;
 static int handler(int type, int par1, int par2)
 {
     switch (type) {
@@ -780,30 +897,40 @@ static int handler(int type, int par1, int par2)
         f_small = OpenFont(DEFAULTFONT, 28, 1);
         f_smallb = OpenFont(DEFAULTFONTB, 28, 1);
         f_mono = OpenFont(DEFAULTFONTM, 30, 1);
-        mkdir(CHATS_DIR, 0755);
         ai_load_cfg();
         if (!ai_bearer()[0] && screen == LIST) screen = NOKEY;
         scan_chats();
         break;
     case EVT_SHOW:
         if (screen == NOKEY && ai_load_cfg()) screen = LIST;   /* la clave pudo llegar desde la web o los Ajustes */
-        if (auto_question && ai_bearer()[0]) { screen = LIST; SetWeakTimer("ia_auto", run_auto, 500); }
+        if (auto_question && ai_bearer()[0]) { screen = CHAT; SetWeakTimer("ia_auto", run_auto, 500); }
         draw_current();
         break;
+    case EVT_POINTERDOWN:
+        down_x = par1; down_y = par2;
+        return 1;
     case EVT_POINTERLONG:
         if (screen == LIST && par2 >= list_top()) {
             int k = (par2 - list_top()) / ROW_H;
             if (list_scroll + k < nchats) { long_pressed = 1; ask_delete(chats[list_scroll + k].path, chats[list_scroll + k].title); }
         }
         return 1;
-    case EVT_POINTERUP:
+    case EVT_POINTERUP: {
         if (long_pressed) { long_pressed = 0; return 1; }
+        int dy = par2 - down_y, dx = par1 - down_x;
+        /* arrastrar en vertical: el texto sigue al dedo */
+        if ((screen == CHAT || screen == LIST) && abs(dy) > 70 && abs(dy) > abs(dx) && down_y > TOP_BAR && down_y < H - toolbar_h()) {
+            if (screen == CHAT) scroll_by(-dy / LH);
+            else scroll_by(-dy / ROW_H ? -dy / ROW_H : (dy < 0 ? 1 : -1));
+            return 1;
+        }
         if (screen == CHAT) chat_tap(par1, par2);
         else if (screen == USAGE) usage_tap(par1, par2);
-        else if (screen == NOKEY && par2 < 50 && par1 < W / 3) CloseApp();
+        else if (screen == NOKEY && pockit_back_hit(par1, par2)) CloseApp();
         else if (screen == NOKEY) { kbd[0] = 0; OpenKeyboard("Clave de DeepSeek", kbd, 200, KBD_ENTEXT | KBD_NOEVTSHOW, on_key); }
         else list_tap(par1, par2);
         return 1;
+    }
     case EVT_KEYPRESS:
         if (par1 == IV_KEY_BACK || par1 == IV_KEY_HOME || par1 == IV_KEY_MENU) {
             if (screen == CHAT || screen == USAGE) back_to_list(); else CloseApp();
@@ -821,10 +948,15 @@ static int handler(int type, int par1, int par2)
 
 void ia_args(int argc, char *argv[])
 {
-    if (argc > 2 && !strcmp(argv[1], "--preguntar")) { auto_question = argv[2]; argc = 1; }
+    if (argc > 2 && !strcmp(argv[1], "--preguntar")) { auto_question = argv[2]; argc = 1; for (char *p = auto_question; *p; p++) if (*p == '_') *p = ' '; }   /* APPARGS separa por espacios */
     if (argc > 1 && !strcmp(argv[1], "--uso")) { screen = USAGE; return; }
-    /* Para las capturas del emulador: «ia ruta.md» abre ese chat directamente. */
-    if (argc > 1) { screen = CHAT; load_chat(argv[1]); scroll_row = 0; }
+#ifdef EMULATOR
+    void agent_tool_test(const char *name, const char *args);
+    if (argc > 3 && !strcmp(argv[1], "--herramienta")) { agent_tool_test(argv[2], argv[3]); return; }
+#endif
+    if (argc > 1 && !strcmp(argv[1], "--nuevo")) { screen = CHAT; if (argc > 2) snprintf(draft, sizeof draft, "%s", argv[2]); return; }
+    /* Para las capturas del emulador: «ia ruta.md [fila]» abre ese chat directamente. */
+    if (argc > 1) { screen = CHAT; load_chat(argv[1]); scroll_row = argc > 2 ? atoi(argv[2]) : 0; }
 }
 
 int ia_handler(int type, int par1, int par2) { return handler(type, par1, par2); }

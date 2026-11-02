@@ -3,8 +3,8 @@
  *
  * Una sola app con módulos (pockit.h). Aquí están el manejador de eventos que reparte a
  * cada módulo, el Inicio y los Ajustes. El Inicio es un panel de un vistazo: el libro que
- * lees (con acceso a «Dónde voy»), tu semana, tus tareas pendientes y los módulos.
- * Los Ajustes gestionan lo mismo que la web: clave y modelo de la IA, gasto y versión.
+ * lees (con acceso a «Dónde voy»), tu semana y los módulos. Nada más: Pockit no te reclama.
+ * Los Ajustes: dónde se guardan tus datos (el lector o Dropbox), Pockit AI y la versión.
  */
 #include "inkview.h"
 #include <stdio.h>
@@ -53,6 +53,15 @@ static void fonts(void)
     f_smallb = OpenFont(DEFAULTFONTB, 28, 1);
 }
 
+/* «‹ Pockit», igual de grande y en el mismo sitio en todos los módulos */
+void pockit_back(void)
+{
+    fonts();
+    SetFont(f_head, BLACK);
+    DrawString(M - 20, 42, "‹ Pockit");
+}
+int pockit_back_hit(int x, int y) { fonts(); return y < 100 && x < W / 3; }
+
 /* Los iconos van dentro del programa; LoadBitmap necesita un archivo, así que se escriben una vez en /tmp. */
 static ibitmap *icon(const char *name, const unsigned char *data, int len)
 {
@@ -71,7 +80,7 @@ static void update_check(int force);
 
 /* ---------- Inicio ---------- */
 static int home_shown;
-static int card_y0, card_y1, donde_y0, tasks_y0, tasks_y1, tiles_y0;
+static int card_y0, card_y1, donde_y0, tiles_y0;
 #define TILE_H 180
 
 typedef struct { const char *name; int mod; const unsigned char *icon; int len; } Tile;
@@ -83,6 +92,12 @@ static const Tile TILES[] = {
     { "Ajustes", MOD_AJUSTES, icon_ajustes, sizeof icon_ajustes },
 };
 #define NTILES 5
+
+ibitmap *pockit_icon(int mod)
+{
+    for (int i = 0; i < NTILES; i++) if (TILES[i].mod == mod) return icon(TILES[i].name, TILES[i].icon, TILES[i].len);
+    return NULL;
+}
 
 static void draw_home(void)
 {
@@ -158,23 +173,6 @@ static void draw_home(void)
     }
     y += 120;
 
-    /* tareas pendientes */
-    static char tasks[3][200];
-    int nt = cuaderno_tasks(tasks, 3);
-    tasks_y0 = y;
-    SetFont(f_bold, BLACK);
-    DrawString(M, y, "Pendiente");
-    y += 58;
-    if (!nt) { SetFont(f_body, SOFT); DrawString(M, y, "Nada pendiente en el Cuaderno."); y += 52; }
-    for (int i = 0; i < nt; i++) {
-        DrawRect(M, y + 4, 32, 32, BLACK);
-        DrawRect(M + 1, y + 5, 30, 30, BLACK);
-        SetFont(f_body, BLACK);
-        DrawTextRect(M + 52, y, W - 2 * M - 52, 44, tasks[i], ALIGN_LEFT | DOTS);
-        y += 52;
-    }
-    tasks_y1 = y;
-
     /* módulos */
     tiles_y0 = H - 2 * TILE_H - 40;
     int tw = (W - 2 * M) / 3;
@@ -213,9 +211,7 @@ static int home_handler(int type, int par1, int par2)
         if (y >= tiles_y0) {
             int i = ((y - tiles_y0) / TILE_H) * 3 + (x - M) / ((W - 2 * M) / 3);
             if (i >= 0 && i < NTILES && x >= M) pockit_open(TILES[i].mod);
-        } else if (y >= donde_y0 && y < donde_y0 + 90) lectura_open_current(1);
-        else if (y >= card_y0 && y < card_y1) lectura_open_current(0);
-        else if (y >= tasks_y0 && y < tasks_y1) pockit_open(MOD_CUADERNO);
+        } else if (y >= card_y0 && y < card_y1) lectura_open_current();
         return 1;
     }
     case EVT_KEYPRESS:
@@ -325,7 +321,29 @@ static void do_update(int button)
 
 /* ---------- Ajustes ---------- */
 static int aj_shown;
-static int ai_y, ver_y;
+static int ai_y, ver_y, data_y;
+static void draw_ajustes(void);
+
+/* un interruptor como los del lector: «on» en negro a la derecha */
+static void switch_at(int x, int y, int on)
+{
+    for (int i = 0; i < 3; i++) DrawRect(x + i, y + i, 140 - 2 * i, 64 - 2 * i, on ? BLACK : 0x999999);
+    if (on) { FillArea(x + 64, y + 6, 70, 52, BLACK); SetFont(f_smallb, WHITE); DrawTextRect(x + 64, y + 6, 70, 52, "on", ALIGN_CENTER | VALIGN_MIDDLE); }
+    else { FillArea(x + 6, y + 6, 70, 52, 0xCCCCCC); SetFont(f_small, SOFT); DrawTextRect(x + 70, y + 6, 64, 52, "off", ALIGN_CENTER | VALIGN_MIDDLE); }
+}
+
+static void set_dropbox(int button)
+{
+    if (button == 1) {
+        int on = !pockit_dropbox();
+        char err[300] = "";
+        if (pockit_set_dropbox(on, err, sizeof err))
+            Message(ICON_INFORMATION, "Pockit", on ? "Listo: tus datos están en Dropbox PocketBook/Pockit y se subirán cuando haya wifi."
+                                                   : "Listo: tus datos vuelven a este lector. Lo que había en Dropbox se queda allí.", 3500);
+        else Message(ICON_WARNING, "Pockit", err, 4000);
+    }
+    draw_ajustes();
+}
 
 static void draw_ajustes(void)
 {
@@ -337,7 +355,26 @@ static void draw_ajustes(void)
     SetFont(f_title, BLACK);
     DrawString(M, 110, "Ajustes");
     int y = 230;
-    char line[300];
+    char line[300], dbx[600];
+
+    /* dónde viven tus notas, chats y lo que Pockit sabe de tus libros */
+    int in_dbx = pockit_dropbox(), ready = pockit_dropbox_ready(dbx, sizeof dbx);
+    SetFont(f_smallb, SOFT);
+    DrawString(M, y, "TUS DATOS");
+    y += 50;
+    data_y = y;
+    SetFont(f_body, BLACK);
+    DrawString(M, y + 10, "Sincronizar con Dropbox");
+    switch_at(W - M - 140, y, in_dbx);
+    SetFont(f_small, SOFT);
+    DrawTextRect(M, y + 80, W - 2 * M, 130,
+                 in_dbx ? "Tus notas, chats y lo que Pockit sabe de tus libros están en Dropbox PocketBook/Pockit. El lector los sube a tu Dropbox cuando hay wifi; sin conexión se guardan igual."
+                 : ready ? "Ahora se guardan solo en este lector. Actívalo para tenerlos también en tu Dropbox: es texto, ocupa muy poco."
+                         : "Ahora se guardan solo en este lector. Para usar Dropbox, conéctalo antes en Ajustes del lector → Cuentas y sincronización → Dropbox PocketBook.",
+                 ALIGN_LEFT);
+    y += 220;
+    DrawLine(M, y, W - M, y, LINE);
+    y += 30;
 
     SetFont(f_smallb, SOFT);
     DrawString(M, y, "POCKIT AI");
@@ -391,7 +428,14 @@ static int ajustes_h(int type, int par1, int par2)
     case EVT_SHOW: update_check(0); draw_ajustes(); break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
-        if (y < 90 && x < W / 3) { pockit_home(); return 1; }
+        if (pockit_back_hit(x, y)) { pockit_home(); return 1; }
+        if (y >= data_y - 10 && y < data_y + 200) {
+            Dialog(ICON_QUESTION, "Dropbox",
+                   pockit_dropbox() ? "¿Dejar de usar Dropbox? Tus datos se copian de vuelta a este lector; lo que hay en Dropbox se queda allí."
+                                    : "¿Guardar tus datos en Dropbox? Tus notas, chats y lo que Pockit sabe de tus libros pasan a la carpeta Dropbox PocketBook/Pockit, y el lector los sube cuando tiene wifi. Antes se guarda una copia en el lector.",
+                   pockit_dropbox() ? "Dejar de usarlo" : "Activar", "Cancelar", set_dropbox);
+            return 1;
+        }
         if (y >= ai_y - 10 && y < ai_y + 140 && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
         if (y >= ver_y - 10 && y < ver_y + 140) {
             if (new_version[0]) {

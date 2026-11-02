@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.1.0"
+#define POCKIT_VERSION "2.2.1"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -31,13 +31,33 @@ void lectura_args(int, char **);
 void cuaderno_args(int, char **);
 void ia_args(int, char **);
 
+/* «‹ Pockit» arriba a la izquierda, igual en todos los módulos (main.c). */
+void pockit_back(void);
+int pockit_back_hit(int x, int y);
+ibitmap *pockit_icon(int mod);              /* el icono de un módulo, 120 × 120 (liberar con free) */
+
+/* Tus datos (datos.c): Notas/, Chats/ y Libros/ en Pockit/ o en Dropbox PocketBook/Pockit/. */
+const char *pockit_data(void);
+void pockit_path(char *out, size_t n, const char *sub);   /* <datos>/<sub>, creada si no existe */
+int pockit_dropbox(void);                                  /* 1 si tus datos están en Dropbox */
+int pockit_dropbox_ready(char *folder, size_t n);          /* 1 si Dropbox está conectado en el lector */
+int pockit_set_dropbox(int on, char *err, size_t n);       /* mueve tus datos; 1 si salió bien */
+void pockit_book_dir(const char *title, char *out, size_t n);       /* Libros/<etiqueta>/ de un libro */
+void pockit_book_adopt(const char *title, const char *cache_dir);   /* trae lo guardado por la 2.1 */
+void pockit_tag(const char *title, char *out, size_t n);  /* etiqueta de un libro, sin # */
+int pockit_tags(const char *text, char tags[][48], int max);         /* las #etiquetas de un texto */
+int pockit_tag_matches(const char *tag, const char *book_tag);      /* ¿esta etiqueta es de ese libro? */
+void pockit_fold(const char *s, char *out, size_t n);     /* sin mayúsculas ni tildes */
+unsigned pockit_fold_cp(unsigned c);
+int pockit_u8(const unsigned char *s, unsigned *cp);
+
 /* Para el Inicio */
 typedef struct { char title[300], author[200], cover[1200]; double progress; int page, pages; long opened; int ok; } PockitReading;
 int lectura_now(PockitReading *out);        /* el libro a medias abierto más recientemente */
 int lectura_week(int active[7]);            /* días con lectura de lunes a domingo; devuelve el de hoy */
-void lectura_open_current(int sub);         /* abre la ficha del libro actual en una pestaña */
-int cuaderno_tasks(char out[][200], int max); /* tareas pendientes de todas las notas */
-void cuaderno_open_note(const char *path);  /* abre una nota concreta (los Apuntes de un libro) */
+void lectura_open_current(void);            /* abre la ficha del libro que lees */
+void cuaderno_open_note(const char *path);  /* abre una nota concreta */
+void cuaderno_open_tag(const char *tag);    /* abre el Cuaderno filtrado por una etiqueta */
 
 /* Para Pockit AI: los datos de Lectura, de solo lectura. i va de 0 hasta que devuelven 0.
  * Los libros van del abierto más recientemente al más antiguo; las marcas, de la más nueva a la más vieja. */
@@ -46,6 +66,7 @@ typedef struct {
     double progress;   /* de 0 a 1; -1 si no se sabe */
     int done, page, pages, marks, words;
     long added, opened, completed_ts;
+    int gone;          /* ya no está en el lector: queda su ficha */
 } PockitBook;
 typedef struct {
     const char *text, *note, *book, *context;   /* subrayado o palabra; nota o definición; libro; frase donde estaba la palabra */

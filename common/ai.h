@@ -363,7 +363,8 @@ static int ai_stream(JBuf *body, const char *what, void (*on_text)(const char *t
 }
 
 /* Llamada corta sin herramientas. Devuelve el texto (malloc) o NULL con el error en err.
- * what: concepto para el registro de gasto. */
+ * what: concepto para el registro de gasto. Lo que costó queda en ai_last_cost. */
+static double ai_last_cost;
 static char *ai_complete(const char *system_prompt, const char *user, int max_tokens, const char *what, char *err, size_t errn)
 {
     if (!ai_bearer()[0] && !ai_load_cfg()) { snprintf(err, errn, "Falta la clave de la IA."); return NULL; }
@@ -378,6 +379,7 @@ static char *ai_complete(const char *system_prompt, const char *user, int max_to
     AiResult r;
     int ok = ai_stream(&b, what, NULL, NULL, &r);
     free(b.s);
+    ai_last_cost = r.cost;
     char *out = NULL;
     if (ok && r.text.len) { out = r.text.s; r.text.s = NULL; }
     else snprintf(err, errn, "%s", r.err[0] ? r.err : "La IA no respondió.");

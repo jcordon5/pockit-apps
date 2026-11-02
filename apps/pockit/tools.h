@@ -17,6 +17,9 @@ typedef struct {
     JBuf *out;          /* resultado para el modelo */
     char step[400];     /* resumen para la persona */
     char undo[1100];    /* «copia|nota» si cambió una nota («-|nota» si la creó) */
+    double cost;        /* lo que gastó en IA la propia herramienta (resumir) */
+    void (*doing)(void *ctx, const char *what);   /* progreso de una herramienta larga */
+    void *doing_ctx;
 } ToolCtx;
 
 typedef struct {
@@ -29,8 +32,5 @@ typedef struct {
 
 extern const Tool TOOLS[];
 extern const int NTOOLS;
-
-/* Un texto sin mayúsculas ni tildes (para comparar nombres y buscar). */
-void tools_fold(const char *s, char *out, size_t n);
 
 #endif

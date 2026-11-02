@@ -3,8 +3,11 @@
  *
  *  - Libros (Lectura y el texto del ePub): biblioteca, estadísticas, capítulos o relatos,
  *    buscar y leer. Solo hasta donde vas, salvo que se pida lo contrario: sin destripes.
- *  - Cuaderno: notas Markdown de Notas/ y sus tareas «- [ ]». Antes de cambiar una nota se
- *    guarda una copia en system/config/pockit/deshacer/ para poder deshacerlo.
+ *  - Cuaderno: notas Markdown de Notas/ (en la carpeta de tus datos, datos.c), sus #etiquetas
+ *    y sus tareas «- [ ]». Antes de cambiar una nota se guarda una copia en
+ *    system/config/pockit/deshacer/ para poder deshacerlo.
+ *  - Lo que Pockit AI aprende de un libro se queda en Lectura: resúmenes de lo leído
+ *    (summarize_reading) y quién es quién (remember_character), en Libros/<etiqueta>/.
  *  - Calculadora, Wikipedia e internet (DuckDuckGo y leer una página). curl se configura
  *    con un archivo (-K), así que nada de lo que escribe el modelo pasa por la shell.
  *
@@ -23,11 +26,21 @@
 #include "pockit.h"
 #include "tools.h"
 #include "../../common/epub.h"
+#include "../../common/ai.h"
 
-#define NOTES_DIR FLASHDIR "/Notas"
 #define UNDO_DIR POCKIT_DIR "/deshacer"
 #define TASKS_NOTE "Tareas"
 #define MAX_OUT 9000   /* caracteres por resultado */
+
+/* Cuaderno (más abajo): lo usan también las herramientas de libros */
+typedef struct { char path[600], title[200], tags[200]; long mtime; } Note;
+static Note notes[400];
+static int nnotes;
+static void scan_notes(void);
+static int note_has_tag(const Note *n, const char *tag);
+static int write_file(const char *path, const char *s, long n);
+
+static const char *notes_dir(void) { static char d[700]; pockit_path(d, sizeof d, "Notas"); return d; }
 
 static const char *MESES[] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
 
@@ -72,46 +85,8 @@ static int arg_bool(ToolCtx *c, const char *key, int def)
     return ch == 't' || ch == '1' || ch == 's' || ch == 'y';
 }
 
-/* UTF-8 → letra; devuelve los bytes que ocupa */
-static int u8(const unsigned char *s, unsigned *cp)
-{
-    if (s[0] < 0x80) { *cp = s[0]; return 1; }
-    if ((s[0] & 0xE0) == 0xC0 && s[1]) { *cp = (s[0] & 31) << 6 | (s[1] & 63); return 2; }
-    if ((s[0] & 0xF0) == 0xE0 && s[1] && s[2]) { *cp = (s[0] & 15) << 12 | (s[1] & 63) << 6 | (s[2] & 63); return 3; }
-    if ((s[0] & 0xF8) == 0xF0 && s[1] && s[2] && s[3]) { *cp = (s[0] & 7) << 18 | (s[1] & 63) << 12 | (s[2] & 63) << 6 | (s[3] & 63); return 4; }
-    *cp = s[0];
-    return 1;
-}
-/* minúscula y sin tilde (latín-1); la ñ cuenta como n: en el teclado del lector cuesta escribirla */
-static unsigned fold_cp(unsigned c)
-{
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    if (c < 0xC0 || c > 0xFF || c == 0xD7 || c == 0xF7 || c == 0xDF) return c;
-    if (c == 0xFF) return 'y';
-    unsigned u = c >= 0xE0 ? c - 0x20 : c;   /* a mayúscula latín-1: una sola tabla */
-    if (u <= 0xC5) return 'a';
-    if (u == 0xC7) return 'c';
-    if (u >= 0xC8 && u <= 0xCB) return 'e';
-    if (u >= 0xCC && u <= 0xCF) return 'i';
-    if (u == 0xD1) return 'n';
-    if ((u >= 0xD2 && u <= 0xD6) || u == 0xD8) return 'o';
-    if (u >= 0xD9 && u <= 0xDC) return 'u';
-    if (u == 0xDD) return 'y';
-    return u + 0x20;
-}
-void tools_fold(const char *s, char *out, size_t n)
-{
-    size_t j = 0;
-    for (const unsigned char *p = (const unsigned char *)s; *p && j + 4 < n; ) {
-        unsigned cp;
-        p += u8(p, &cp);
-        cp = fold_cp(cp);
-        char *o = out + j;
-        json_utf8(&o, cp);
-        j = o - out;
-    }
-    out[j] = 0;
-}
+#define u8 pockit_u8
+#define fold_cp pockit_fold_cp
 /* ¿empieza s (texto normal) por q (ya plegado)? mlen: bytes de s que coinciden */
 static int match_at(const char *s, const char *end, const char *q, long *mlen)
 {
@@ -149,7 +124,7 @@ static long cut_utf8(const char *s, long n) { while (n > 0 && ((unsigned char)s[
 /* ---------- libros ---------- */
 static int current_book(PockitBook *b)
 {
-    for (int i = 0; lectura_book(i, b); i++) if (!b->done && b->progress > 0) return i;
+    for (int i = 0; lectura_book(i, b); i++) if (!b->done && b->progress > 0 && !b->gone) return i;
     return -1;
 }
 
@@ -162,11 +137,11 @@ static int pick_book(ToolCtx *c, PockitBook *b)
         outf(c, "No estás leyendo ningún libro ahora mismo. Di cuál (usa list_books).");
         return 0;
     }
-    tools_fold(want, wf, sizeof wf);
+    pockit_fold(want, wf, sizeof wf);
     int best = -1, score = 0;
     PockitBook x;
     for (int i = 0; lectura_book(i, &x); i++) {
-        tools_fold(x.title, tf, sizeof tf);
+        pockit_fold(x.title, tf, sizeof tf);
         int s = !strcmp(tf, wf) ? 3 : fold_contains(x.title, wf) ? 2 : fold_contains(x.author, wf) ? 1 : 0;
         if (s > score) { score = s; best = i; }
     }
@@ -185,6 +160,7 @@ static int is_epub(const char *p) { size_t l = strlen(p); return l > 5 && !strca
 /* Carga el texto del libro (con su caché). 1 si se puede leer. */
 static int book_text(ToolCtx *c, const PockitBook *b)
 {
+    if (b->gone) { outf(c, "«%s» ya no está en el lector: solo queda lo que Pockit guardó de él (book_memory) y tus notas con su etiqueta.", b->title); return 0; }
     if (!is_epub(b->path)) {
         const char *dot = strrchr(b->path, '.');
         outf(c, "Solo puedo leer el texto de los libros ePub, y «%s» es %s.", b->title, dot ? dot + 1 : "otro formato");
@@ -197,6 +173,7 @@ static int book_text(ToolCtx *c, const PockitBook *b)
     }
     if (eb_state == 1) { outf(c, "«%s» tiene DRM: su texto no se puede leer.", b->title); return 0; }
     if (eb_state < 0 || !eb.len) { outf(c, "No se pudo abrir «%s».", b->title); eb_path[0] = 0; return 0; }
+    pockit_book_adopt(b->title, eb.dir);
     readpos = ep_position(&eb, b->position, b->done ? 1.0 : b->progress > 0 ? b->progress : 0);
     if (b->done) readpos = eb.len;
     return 1;
@@ -224,7 +201,10 @@ static void t_list_books(ToolCtx *c)
         if (!strcmp(filter, "finished") && !b.done) continue;
         if (!strcmp(filter, "unread") && !unread) continue;
         if (n >= limit) { n++; continue; }
-        outf(c, "- «%s»%s%s", b.title, b.author[0] ? " de " : "", b.author);
+        char tag[64];
+        pockit_tag(b.title, tag, sizeof tag);
+        outf(c, "- «%s»%s%s · etiqueta #%s", b.title, b.author[0] ? " de " : "", b.author, tag);
+        if (b.gone) outf(c, " · ya no está en el lector");
         if (b.done) { if (b.completed_ts > 0) { day_str(b.completed_ts, d, sizeof d); outf(c, " · terminado el %s", d); } else outf(c, " · terminado"); }
         else if (b.progress > 0) outf(c, " · %d %%", (int)(b.progress * 100 + 0.5));
         else outf(c, " · sin empezar");
@@ -302,7 +282,7 @@ static void t_search_book(ToolCtx *c)
     if (!arg_str(c, "query", q, sizeof q)) { outf(c, "Falta query."); snprintf(c->step, sizeof c->step, "Búsqueda vacía"); return; }
     if (!pick_book(c, &b) || !book_text(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudo buscar «%.60s»", q); return; }
     int unread = arg_bool(c, "include_unread", 0);
-    tools_fold(q, qf, sizeof qf);
+    pockit_fold(q, qf, sizeof qf);
     long end = unread ? eb.len : readpos;
     const char *t = eb.text, *te = eb.text + end;
     int found = 0, shown = 0;
@@ -344,7 +324,7 @@ static void t_read_book(ToolCtx *c)
         int num = atoi(ch);
         if (num >= 1 && num <= k) want = num - 1;
         else {
-            tools_fold(ch, cf, sizeof cf);
+            pockit_fold(ch, cf, sizeof cf);
             for (int j = 0; j < k && want < 0; j++) if (fold_contains(eb.ch[idx[j]].title, cf)) want = j;
         }
         if (want < 0) { outf(c, "No hay ningún capítulo «%s». Mira book_chapters.", ch); snprintf(c->step, sizeof c->step, "No encontrado el capítulo «%.60s»", ch); return; }
@@ -373,39 +353,359 @@ static void t_read_book(ToolCtx *c)
     snprintf(c->step, sizeof c->step, "Leído «%.60s» de «%.60s»%s", e->title, b.title, parts > 1 ? " (una parte)" : "");
 }
 
+/* Lee Libros/<etiqueta>/<name> línea a línea (sin el salto); fn devuelve 0 para parar. */
+static void each_line(const char *title, const char *name, int (*fn)(char *line, void *ctx), void *ctx)
+{
+    char dir[800], p[900];
+    pockit_book_dir(title, dir, sizeof dir);
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    FILE *f = fopen(p, "r");
+    char *buf = malloc(8192);
+    while (f && fgets(buf, 8192, f)) { buf[strcspn(buf, "\n")] = 0; if (!fn(buf, ctx)) break; }
+    if (f) fclose(f);
+    free(buf);
+}
+
+/* Los resúmenes guardados (tramos.tsv), ordenados por dónde empiezan. Puede haber huecos:
+ * «lo último» se resume sin haber resumido lo de antes. */
+typedef struct { long a, z; char *text; } Sum;
+static Sum sums[400];
+static int nsums;
+static int by_start(const void *x, const void *y) { long a = ((const Sum *)x)->a, b = ((const Sum *)y)->a; return a < b ? -1 : a > b; }
+static int sum_line(char *line, void *vx)
+{
+    char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+    if (!t2 || nsums >= 400) return 1;
+    sums[nsums++] = (Sum){ atol(line), atol(t1 + 1), strdup(t2 + 1) };
+    return 1;
+}
+static void load_sums(const char *title)
+{
+    for (int i = 0; i < nsums; i++) free(sums[i].text);
+    nsums = 0;
+    each_line(title, "tramos.tsv", sum_line, NULL);
+    qsort(sums, nsums, sizeof *sums, by_start);
+}
+
+/* Los resúmenes que tocan [from, to), con el que va justo antes como contexto. */
+static void out_sums(ToolCtx *c, long from, long to, long len, long limit)
+{
+    int first = 0;
+    for (int i = 0; i < nsums; i++) if (sums[i].z <= from) first = i;
+    long start = c->out->len;
+    for (int i = first; i < nsums && sums[i].a < to; i++) {
+        if (!strcmp(sums[i].text, "—")) continue;
+        if (c->out->len - start > limit) { outf(c, "\n(…hay más resúmenes guardados)"); break; }
+        if (i > first && sums[i].a > sums[i - 1].z + 2000) outf(c, "\n[…hueco sin resumir…]\n");
+        if (len > 1) outf(c, "\n[del %d %% al %d %%] ", (int)(100.0 * sums[i].a / len), (int)(100.0 * sums[i].z / len));
+        else outf(c, "\n");
+        for (char *q = sums[i].text; *q; q++) { if (q[0] == '\\' && q[1] == 'n') { out_raw(c, "\n", 1); q++; } else out_raw(c, q, 1); }
+        outf(c, "\n");
+    }
+}
+
+typedef struct { ToolCtx *c; long len; int n; const char *title; long upto; } MemCtx;
+
+/* ¿Ha salido ya este nombre hasta upto? Lo revisado de todo el libro no se enseña antes de tiempo. */
+static int reached(const char *name, long upto)
+{
+    long o;
+    if (upto <= 0 || ep_mentions(&eb, name, upto, &o, 1)) return 1;
+    char first[64];
+    snprintf(first, sizeof first, "%.*s", (int)strcspn(name, " "), name);   /* «Pero Pérez» sale como «Pero» */
+    return strlen(first) >= 4 && strcmp(first, name) && ep_mentions(&eb, first, upto, &o, 1);
+}
+static int mem_person(char *line, void *vx)
+{
+    MemCtx *x = vx;
+    char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+    if (!t2) return 1;
+    *t1 = *t2 = 0;
+    if (!reached(line, x->upto)) return 1;   /* aún no ha salido: sin destripes */
+    if (!x->n) outf(x->c, "\n\nQuién es quién (guardado en Lectura → Personajes):\n");
+    outf(x->c, "- %s (%s): %s\n", line, t1 + 1, t2 + 1);
+    x->n++;
+    return !out_full(x->c);
+}
+
 static void t_book_memory(ToolCtx *c)
 {
     PockitBook b;
-    if (!pick_book(c, &b) || !book_text(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudo consultar el libro"); return; }
-    char p[400], *buf = malloc(8192);
-    int nt = 0, np = 0;
-    snprintf(p, sizeof p, "%s/tramos.tsv", eb.dir);
-    FILE *f = fopen(p, "r");
-    while (f && fgets(buf, 8192, f) && !out_full(c)) {
-        char *t1 = strchr(buf, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
-        if (!t2) continue;
-        t2[strcspn(t2, "\n")] = 0;
-        if (!nt) outf(c, "Resúmenes de «Dónde voy» de «%s», por tramos:\n", b.title);
-        outf(c, "\n[hasta el %d %%] ", (int)(100.0 * atol(t1 + 1) / eb.len));
-        for (char *q = t2 + 1; *q; q++) { if (q[0] == '\\' && q[1] == 'n') { out_raw(c, "\n", 1); q++; } else out_raw(c, q, 1); }
-        nt++;
-    }
-    if (f) fclose(f);
-    snprintf(p, sizeof p, "%s/personajes.tsv", eb.dir);
-    f = fopen(p, "r");
-    while (f && fgets(buf, 8192, f) && !out_full(c)) {
-        char *t1 = strchr(buf, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
-        if (!t2) continue;
-        *t1 = *t2 = 0;
-        t2[1 + strcspn(t2 + 1, "\n")] = 0;
-        if (!np) outf(c, "\n\nPersonajes:\n");
-        outf(c, "- %s (%s): %s\n", buf, t1 + 1, t2 + 1);
-        np++;
-    }
-    if (f) fclose(f);
-    free(buf);
-    if (!nt && !np) outf(c, "Pockit aún no tiene resúmenes ni personajes guardados de «%s». Usa search_book o read_book.", b.title);
+    if (!pick_book(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudo consultar el libro"); return; }
+    long before = c->out->len;
+    if (!book_text(c, &b)) { c->out->len = before; if (c->out->s) c->out->s[before] = 0; }   /* sin el texto también vale */
+    int loaded = !b.gone && eb_state == 0 && !strcmp(eb_path, b.path);
+    MemCtx x = { c, loaded ? eb.len : 0, 0, b.title, loaded ? readpos : 0 };
+    load_sums(b.title);
+    int nt = nsums;
+    if (nt) { outf(c, "Resúmenes guardados de «%s» (Lectura → Dónde voy):\n", b.title); out_sums(c, 0, 0x7fffffffL, x.len ? x.len : 1, 6000); }
+    each_line(b.title, "personajes.tsv", mem_person, &x);
+    int np = x.n;
+    char tag[64];
+    pockit_tag(b.title, tag, sizeof tag);
+    scan_notes();
+    int nn = 0;
+    for (int i = 0; i < nnotes && !out_full(c); i++)
+        if (note_has_tag(&notes[i], tag)) { outf(c, nn ? ", «%s»" : "\n\nNotas del Cuaderno con #%s: «%s»", nn ? notes[i].title : tag, notes[i].title); nn++; }
+    if (!nt && !np && !nn) outf(c, "Pockit aún no tiene nada guardado de «%s» (ni resúmenes, ni personajes, ni notas con #%s). Para recordar lo leído usa summarize_reading.", b.title, tag);
     snprintf(c->step, sizeof c->step, "Repasado lo que Pockit sabe de «%.80s»", b.title);
+}
+
+/* ---------- lo que Pockit AI guarda en Lectura ---------- */
+static const char *SYS_RESUMEN =
+    "Resumes fragmentos de un libro para que su lector recuerde lo que ya ha leído. Usa SOLO el texto que se te da: "
+    "no uses lo que sepas del libro ni anticipes nada de lo que viene después. Escribe en español, en un párrafo de "
+    "120 palabras como máximo, en presente, con los nombres de los personajes en **negrita**.";
+#define CHUNK 36000        /* ~9.000 tokens por petición */
+#define RECENT 40000       /* «lo último»: unas 22 páginas antes de donde vas */
+#define ASK_ABOVE 150000   /* más de ~80 páginas de golpe: antes se pregunta (coste y tiempo) */
+#define MAX_CHUNKS 60      /* tope por llamada ya confirmada: ~1.200 páginas */
+
+/* El texto de [from, to) sin índices, listas ni avisos legales; devuelve los caracteres útiles. */
+static long story_text(JBuf *b, long from, long to)
+{
+    long n = 0;
+    for (long q = from; q < to; ) {
+        long sk = ep_skip_to(&eb, q);
+        if (sk != q) { q = sk; continue; }
+        int ch = ep_chapter_at(&eb, q);
+        if (ep_is_toc(&eb.ch[ch])) { q = eb.ch[ch].start + eb.ch[ch].len; continue; }
+        long nx = to;
+        for (int k = 0; k < eb.nskip; k++) if (eb.skip[2 * k] > q && eb.skip[2 * k] < nx) nx = eb.skip[2 * k];
+        if (ch + 1 < eb.nch && eb.ch[ch + 1].start > q && eb.ch[ch + 1].start < nx) nx = eb.ch[ch + 1].start;
+        if (nx <= q) nx = q + 1;
+        jb_put(b, eb.text + q, nx - q);
+        n += nx - q;
+        q = nx;
+    }
+    return n;
+}
+
+static void t_summarize_reading(ToolCtx *c)
+{
+    PockitBook b;
+    if (!pick_book(c, &b) || !book_text(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudo resumir"); return; }
+    char scope[16];
+    if (!arg_str(c, "scope", scope, sizeof scope) || strcmp(scope, "all")) snprintf(scope, sizeof scope, "recent");
+    int all = !strcmp(scope, "all"), confirm = arg_bool(c, "confirm", 0);
+    load_sums(b.title);
+    /* desde dónde: todo, o lo último (si el capítulo o relato empezó poco antes, desde su principio) */
+    long from = 0;
+    if (!all) {
+        from = readpos - RECENT;
+        long cs = eb.ch[ep_chapter_at(&eb, readpos)].start;
+        if (cs < from && cs > readpos - RECENT * 3 / 2) from = cs;
+        if (from < 0) from = 0;
+    }
+    /* los huecos sin resumir de [from, readpos) */
+    long ga[200], gz[200], total = 0;
+    int ng = 0, calls = 0;
+    long q = from;
+    for (int i = 0; i <= nsums && ng < 200; i++) {
+        long a = i < nsums ? sums[i].a : readpos, z = i < nsums ? sums[i].z : readpos;
+        if (a > readpos) a = readpos;
+        if (a - q > 1500) { ga[ng] = q; gz[ng] = a; total += a - q; calls += (int)((a - q + CHUNK - 1) / CHUNK); ng++; }   /* menos de una página no compensa */
+        if (z > q) q = z;
+        if (q >= readpos) break;
+    }
+    ai_load_cfg();
+    if (total > ASK_ABOVE && !confirm) {   /* caro o lento: que decida el usuario */
+        char a[32];
+        ai_money(ai_estimate(total, 260 * calls), a, sizeof a);
+        int mins = (calls * 8 + 59) / 60;
+        char when[40];
+        if (mins <= 1) snprintf(when, sizeof when, "un minuto"); else snprintf(when, sizeof when, "unos %d minutos", mins);
+        outf(c, "Resumir %s son unas %ld páginas sin resumir: %d peticiones, ≈ %s y %s con el lector esperando. "
+                "No lo hagas sin preguntar: dile al usuario el coste y el tiempo; si dice que sí, vuelve a llamar con confirm=true.%s",
+             all ? "todo lo leído" : "lo último", total / 1800 + 1, calls, a, when, all ? " Mientras tanto, para recordar lo último, usa scope=recent (barato)." : "");
+        snprintf(c->step, sizeof c->step, "Calculado lo que costaría resumir «%.50s»: ≈ %s", b.title, a);
+        return;
+    }
+    char dir[800], p[900], err[480] = "";
+    pockit_book_dir(b.title, dir, sizeof dir);
+    snprintf(p, sizeof p, "%s/tramos.tsv", dir);
+    int done = 0;
+    if (calls > MAX_CHUNKS) calls = MAX_CHUNKS;
+    for (int g = 0; g < ng && done < MAX_CHUNKS && !err[0]; g++)
+        for (long f0 = ga[g]; gz[g] - f0 > 1500 && done < MAX_CHUNKS; ) {
+            long to = f0 + CHUNK < gz[g] ? f0 + CHUNK : gz[g];
+            if (to < gz[g]) { long t = to; while (t > f0 + CHUNK / 2 && eb.text[t - 1] != '\n') t--; if (t > f0 + CHUNK / 2) to = t; }
+            if (c->doing) { char w[120]; snprintf(w, sizeof w, "Resumiendo lo leído de «%.50s» (%d de %d)", b.title, done + 1, calls); c->doing(c->doing_ctx, w); }
+            const char *prev = "Es el principio del libro.";   /* el resumen que acaba justo antes, si lo hay */
+            for (int i = 0; i < nsums; i++) if (sums[i].z <= f0 && sums[i].z > f0 - 4000 && strcmp(sums[i].text, "—")) prev = sums[i].text;
+            if (prev[0] == 'E' && f0 > 4000) prev = "(lo anterior no está resumido)";
+            JBuf u = { 0 };
+            char head[1200];
+            snprintf(head, sizeof head, "Libro: «%s»%s%s.\nLo anterior, en breve: %.600s\n\nFragmento:\n", b.title, b.author[0] ? " de " : "", b.author, prev);
+            jb_cat(&u, head);
+            long useful = story_text(&u, f0, to);
+            char *r = NULL;
+            if (useful < 200) r = strdup("—");   /* créditos, portadillas: nada que resumir */
+            else { r = ai_complete(SYS_RESUMEN, u.s, 260, "Pockit AI · resumen", err, sizeof err); c->cost += ai_last_cost; }
+            free(u.s);
+            if (!r) break;
+            FILE *f = fopen(p, "a");
+            if (f) {
+                fprintf(f, "%ld\t%ld\t", f0, to);
+                for (const char *t = r; *t; t++) { if (*t == '\n') fputs("\\n", f); else if (*t != '\t' && *t != '\r') fputc(*t, f); }
+                fputc('\n', f);
+                fclose(f);
+            }
+            if (nsums < 400) { sums[nsums++] = (Sum){ f0, to, r }; qsort(sums, nsums, sizeof *sums, by_start); } else free(r);
+            f0 = to;
+            done++;
+        }
+    if (err[0] && !done) { outf(c, "No se pudo resumir: %s", err); snprintf(c->step, sizeof c->step, "No se pudo resumir «%.60s»", b.title); return; }
+    if (!done) outf(c, "(No había páginas nuevas que resumir: esto es lo que ya estaba guardado.)\n");
+    else outf(c, "(Resumidas y guardadas en Lectura → Dónde voy %d partes nuevas.)\n", done);
+    out_sums(c, from, readpos, eb.len, all ? 30000 : 8000);
+    if (err[0]) outf(c, "\n(Se paró antes de acabar: %s)", err);
+    else if (done >= MAX_CHUNKS) outf(c, "\n(Quedan páginas sin resumir: vuelve a llamar con confirm=true para seguir.)");
+    if (!all) outf(c, "\n(Esto es lo último antes de donde va. Para todo el libro: scope=all, que avisa de lo que cuesta.)");
+    if (done) snprintf(c->step, sizeof c->step, "Resumido %s de «%.60s» y guardado en Lectura", all ? "todo lo leído" : "lo último que leíste", b.title);
+    else snprintf(c->step, sizeof c->step, "Repasado el resumen de «%.60s»: ya estaba al día", b.title);
+}
+
+/* ---- quién es quién: los nombres los encuentra el lector; la IA solo los clasifica y describe ---- */
+static const char *SYS_PERSONAJES =
+    "Te paso nombres propios que salen en un libro, cada uno con una o dos frases donde aparece. Clasifica cada nombre: "
+    "personaje (alguien, persona o animal que actúa), lugar (ciudad, país, calle, puente, edificio…) u otro (obras, instituciones, conceptos, "
+    "o un nombre que aquí forma parte de un lugar, como «Carlos» en «puente de Carlos»). Usa SOLO esas frases: no uses lo que sepas del "
+    "libro ni adelantes nada. Responde una línea por nombre, con este formato exacto y nada más:\n"
+    "Nombre | personaje, lugar u otro | quién o qué es, en 12 palabras como máximo";
+
+typedef struct { char names[200][64]; int n; } NameSet;
+static int saved_name(char *line, void *vx)
+{
+    NameSet *x = vx;
+    if (x->n < 200) { snprintf(x->names[x->n], 64, "%.*s", (int)strcspn(line, "\t"), line); x->n++; }
+    return 1;
+}
+/* «Sancho» y «Sancho Panza» son el mismo */
+static int same_person(const char *a, const char *b)
+{
+    char x[200], y[200];
+    pockit_fold(a, x, sizeof x);
+    pockit_fold(b, y, sizeof y);
+    size_t lx = strlen(x), ly = strlen(y);
+    if (!strcmp(x, y)) return 1;
+    return lx < ly ? !strncmp(x, y, lx) && y[lx] == ' ' : !strncmp(x, y, ly) && x[ly] == ' ';
+}
+
+/* Se revisa una vez el libro entero (los nombres que más salen en todo él y en lo leído), así que
+ * al avanzar casi nunca hace falta volver a pedirlo. Cada nombre se describe con las frases donde
+ * aparece por primera vez, y no se enseña hasta que sale en lo que llevas: sin destripes. */
+static void t_review_characters(ToolCtx *c)
+{
+    PockitBook b;
+    if (!pick_book(c, &b) || !book_text(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudieron revisar los personajes"); return; }
+    static EpPerson found[100];
+    int nf = ep_people(&eb, readpos, found, 40);
+    nf += ep_people(&eb, eb.len, found + nf, 60);
+    NameSet *saved = calloc(1, sizeof *saved);
+    each_line(b.title, "personajes.tsv", saved_name, saved);
+    JBuf u = { 0 };
+    char line[1200], ctx[900];
+    snprintf(line, sizeof line, "Libro: «%s»%s%s.\n", b.title, b.author[0] ? " de " : "", b.author);
+    jb_cat(&u, line);
+    int asked = 0, later = 0;
+    static char done_names[100][64];
+    for (int i = 0; i < nf && asked < 60; i++) {
+        if (strstr(b.author, found[i].name)) continue;
+        int known = 0;
+        for (int k = 0; k < saved->n; k++) if (same_person(saved->names[k], found[i].name)) known = 1;
+        for (int k = 0; k < asked; k++) if (!strcmp(done_names[k], found[i].name)) known = 1;
+        if (known) continue;   /* ya revisado: no se vuelve a pagar */
+        ep_context(&eb, found[i].name, eb.len, ctx, sizeof ctx);   /* sus primeras apariciones */
+        snprintf(line, sizeof line, "\n%s: %s\n", found[i].name, ctx);
+        jb_cat(&u, line);
+        snprintf(done_names[asked++], 64, "%s", found[i].name);
+        if (!reached(found[i].name, readpos)) later++;
+    }
+    int added = 0, places = 0;
+    char err[480] = "";
+    if (asked) {
+        if (c->doing) { char w[120]; snprintf(w, sizeof w, "Revisando %d nombres de «%.50s»", asked, b.title); c->doing(c->doing_ctx, w); }
+        ai_load_cfg();
+        char *r = ai_complete(SYS_PERSONAJES, u.s, 40 * asked + 80, "Pockit AI · personajes", err, sizeof err);
+        c->cost += ai_last_cost;
+        if (r) {
+            char dir[800], p[900];
+            pockit_book_dir(b.title, dir, sizeof dir);
+            snprintf(p, sizeof p, "%s/personajes.tsv", dir);
+            FILE *f = fopen(p, "a");
+            for (char *ln = strtok(r, "\n"); ln && f; ln = strtok(NULL, "\n")) {
+                char *x = strchr(ln, '|'), *y = x ? strchr(x + 1, '|') : NULL;
+                if (!y) continue;
+                *x = *y = 0;
+                char *nm = ln, *kd = x + 1, *ds = y + 1;
+                while (*nm == ' ' || *nm == '-' || *nm == '*') nm++;
+                while (*kd == ' ') kd++;
+                while (*ds == ' ') ds++;
+                for (char *e = nm + strlen(nm); e > nm && (e[-1] == ' ' || e[-1] == '*'); ) *--e = 0;
+                for (char *e = kd + strlen(kd); e > kd && e[-1] == ' '; ) *--e = 0;
+                for (char *t = ds; *t; t++) if (*t == '\t') *t = ' ';
+                const char *kind = !strncmp(kd, "lugar", 5) ? "lugar" : !strncmp(kd, "otro", 4) ? "otro" : "personaje";
+                if (!nm[0]) continue;
+                fprintf(f, "%s\t%s\t%s\n", nm, kind, ds);
+                added++;
+                places += strcmp(kind, "personaje") != 0;
+            }
+            if (f) fclose(f);
+            free(r);
+        }
+    }
+    free(u.s);
+    free(saved);
+    if (err[0] && !added) { outf(c, "No se pudieron revisar: %s", err); snprintf(c->step, sizeof c->step, "No se pudieron revisar los personajes"); return; }
+    if (!asked) outf(c, "(Ya estaban revisados: no hacía falta volver a hacerlo.)\n");
+    MemCtx x = { c, eb.len, 0, b.title, readpos };
+    each_line(b.title, "personajes.tsv", mem_person, &x);
+    if (later) outf(c, "\n(También se revisaron %d nombres que salen más adelante: aparecerán en Lectura cuando llegue a ellos. No los menciones.)", later);
+    outf(c, "\n(Guardado en Lectura → Personajes: allí salen quién es quién y, aparte, los lugares.)");
+    if (asked) snprintf(c->step, sizeof c->step, "Revisados los personajes de «%.50s»%s", b.title, places ? ", con los lugares aparte" : "");
+    else snprintf(c->step, sizeof c->step, "Personajes de «%.50s»: ya estaban revisados", b.title);
+}
+
+typedef struct { char want[120]; JBuf keep; int replaced; } PersonEdit;
+static int person_keep(char *line, void *vx)
+{
+    PersonEdit *x = vx;
+    char name[200], nf[200];
+    snprintf(name, sizeof name, "%.*s", (int)strcspn(line, "\t"), line);
+    pockit_fold(name, nf, sizeof nf);
+    if (!strcmp(nf, x->want)) { x->replaced = 1; return 1; }
+    jb_cat(&x->keep, line);
+    jb_cat(&x->keep, "\n");
+    return 1;
+}
+
+static void t_remember_character(ToolCtx *c)
+{
+    PockitBook b;
+    char name[64], kind[24], desc[240];
+    if (!arg_str(c, "name", name, sizeof name)) { outf(c, "Falta name."); return; }
+    if (!pick_book(c, &b)) { snprintf(c->step, sizeof c->step, "No se pudo guardar «%.40s»", name); return; }
+    if (!arg_str(c, "kind", kind, sizeof kind) || (strcmp(kind, "lugar") && strcmp(kind, "otro"))) snprintf(kind, sizeof kind, "personaje");
+    arg_str(c, "description", desc, sizeof desc);
+    for (char *q = name; *q; q++) if (*q == '\t' || *q == '\n') *q = ' ';
+    for (char *q = desc; *q; q++) if (*q == '\t' || *q == '\n') *q = ' ';
+    long before = c->out->len;
+    if (!book_text(c, &b)) { c->out->len = before; if (c->out->s) c->out->s[before] = 0; }   /* solo para traer lo de la 2.1 */
+    PersonEdit x = { "", { 0 }, 0 };
+    pockit_fold(name, x.want, sizeof x.want);
+    each_line(b.title, "personajes.tsv", person_keep, &x);
+    char line[400], dir[800], p[900];
+    snprintf(line, sizeof line, "%s\t%s\t%s\n", name, kind, desc);
+    jb_cat(&x.keep, line);
+    pockit_book_dir(b.title, dir, sizeof dir);
+    snprintf(p, sizeof p, "%s/personajes.tsv", dir);
+    if (write_file(p, x.keep.s, x.keep.len)) {
+        outf(c, "Guardado en Lectura → Personajes de «%s».", b.title);
+        if (!strcmp(kind, "personaje")) snprintf(c->step, sizeof c->step, "Guardado quién es «%.40s» en los personajes de «%.40s»", name, b.title);
+        else snprintf(c->step, sizeof c->step, "Anotado que «%.40s» es %s en «%.40s»", name, !strcmp(kind, "lugar") ? "un lugar" : "otra cosa, no un personaje", b.title);
+    } else { outf(c, "No se pudo guardar."); snprintf(c->step, sizeof c->step, "No se pudo guardar «%.40s»", name); }
+    free(x.keep.s);
 }
 
 static void t_list_marks(ToolCtx *c, int words)
@@ -413,8 +713,8 @@ static void t_list_marks(ToolCtx *c, int words)
     char want[300], wf[300], q[200], qf[400], status[20];
     int has_book = arg_str(c, "book", want, sizeof want), limit = arg_int(c, "limit", words ? 30 : 20, 1, 80);
     int days = arg_int(c, "days", 0, 0, 3650);
-    if (has_book) tools_fold(want, wf, sizeof wf);
-    if (arg_str(c, "query", q, sizeof q)) tools_fold(q, qf, sizeof qf); else qf[0] = 0;
+    if (has_book) pockit_fold(want, wf, sizeof wf);
+    if (arg_str(c, "query", q, sizeof q)) pockit_fold(q, qf, sizeof qf); else qf[0] = 0;
     if (!arg_str(c, "status", status, sizeof status)) snprintf(status, sizeof status, "all");
     long from = days ? day0(time(NULL)) - (days - 1) * 86400L : 0;
     PockitMark m;
@@ -446,42 +746,56 @@ static void t_list_highlights(ToolCtx *c) { t_list_marks(c, 0); }
 static void t_list_words(ToolCtx *c) { t_list_marks(c, 1); }
 
 /* ---------- Cuaderno ---------- */
-typedef struct { char path[600], title[200]; long mtime; } Note;
-static Note notes[400];
-static int nnotes;
 
-static void note_title(const char *path, char *out, size_t n)
+/* Título (la primera línea con texto) y etiquetas («#a #b») de una nota. */
+static void note_info(const char *path, char *title, size_t n, char *tags, size_t tn)
 {
     FILE *f = fopen(path, "r");
-    char buf[400];
-    out[0] = 0;
-    if (f) {
-        while (fgets(buf, sizeof buf, f)) {
-            buf[strcspn(buf, "\r\n")] = 0;
-            if (!strncmp(buf, "# ", 2)) { snprintf(out, n, "%s", buf + 2); break; }
-            if (buf[0]) { snprintf(out, n, "%.60s", buf); break; }
+    char buf[2048], tg[16][48];
+    title[0] = tags[0] = 0;
+    while (f && fgets(buf, sizeof buf, f)) {
+        buf[strcspn(buf, "\r\n")] = 0;
+        int h = 0;
+        while (buf[h] == '#') h++;
+        if (!title[0] && h && buf[h] == ' ') snprintf(title, n, "%s", buf + h + 1);
+        else if (!title[0] && buf[0] && !h) snprintf(title, n, "%.60s", buf);
+        int k = pockit_tags(buf, tg, 16);
+        for (int i = 0; i < k; i++) {
+            char one[52];
+            snprintf(one, sizeof one, "#%s ", tg[i]);
+            if (!strstr(tags, one) && strlen(tags) + strlen(one) < tn) strcat(tags, one);
         }
-        fclose(f);
     }
-    if (!out[0]) { const char *s = strrchr(path, '/'); snprintf(out, n, "%s", s ? s + 1 : path); }
+    if (f) fclose(f);
+    size_t l = strlen(tags);
+    if (l) tags[l - 1] = 0;
+    if (!title[0]) { const char *s = strrchr(path, '/'); snprintf(title, n, "%s", s ? s + 1 : path); }
+}
+
+/* ¿Lleva la nota esa etiqueta (o la de ese libro)? */
+static int note_has_tag(const Note *n, const char *tag)
+{
+    char t[200], *save = NULL;
+    snprintf(t, sizeof t, "%s", n->tags);
+    for (char *w = strtok_r(t, " ", &save); w; w = strtok_r(NULL, " ", &save)) if (pockit_tag_matches(w + 1, tag)) return 1;
+    return 0;
 }
 
 static int by_mtime(const void *a, const void *b) { long x = ((const Note *)a)->mtime, y = ((const Note *)b)->mtime; return x < y ? 1 : x > y ? -1 : 0; }
 static void scan_notes(void)
 {
-    mkdir(NOTES_DIR, 0755);
     nnotes = 0;
-    DIR *d = opendir(NOTES_DIR);
+    DIR *d = opendir(notes_dir());
     struct dirent *e;
     while (d && (e = readdir(d)) && nnotes < 400) {
         size_t l = strlen(e->d_name);
         if (e->d_name[0] == '.' || l < 4 || strcasecmp(e->d_name + l - 3, ".md")) continue;
         Note *n = &notes[nnotes];
-        snprintf(n->path, sizeof n->path, NOTES_DIR "/%s", e->d_name);
+        snprintf(n->path, sizeof n->path, "%s/%s", notes_dir(), e->d_name);
         struct stat st;
         if (stat(n->path, &st)) continue;
         n->mtime = st.st_mtime;
-        note_title(n->path, n->title, sizeof n->title);
+        note_info(n->path, n->title, sizeof n->title, n->tags, sizeof n->tags);
         nnotes++;
     }
     if (d) closedir(d);
@@ -512,10 +826,10 @@ static int find_note(ToolCtx *c, const char *key, const char *def)
         snprintf(want, sizeof want, "%s", def);
     }
     scan_notes();
-    tools_fold(want, wf, sizeof wf);
+    pockit_fold(want, wf, sizeof wf);
     int exact = -1, part = -1, nparts = 0;
     for (int i = 0; i < nnotes; i++) {
-        tools_fold(notes[i].title, tf, sizeof tf);
+        pockit_fold(notes[i].title, tf, sizeof tf);
         if (!strcmp(tf, wf)) { exact = i; break; }
         if (fold_contains(notes[i].title, wf)) { if (part < 0) part = i; nparts++; }
     }
@@ -559,9 +873,14 @@ static int write_file(const char *path, const char *s, long n)
 
 static void t_list_notes(ToolCtx *c)
 {
+    char tag[60], tf[60];
+    int filter = arg_str(c, "tag", tag, sizeof tag);
+    if (filter) pockit_fold(tag[0] == '#' ? tag + 1 : tag, tf, sizeof tf);
     scan_notes();
     char d[60];
+    int shown = 0;
     for (int i = 0; i < nnotes && !out_full(c); i++) {
+        if (filter && !note_has_tag(&notes[i], tf)) continue;
         long n;
         char *s = read_file(notes[i].path, &n);
         int pend = 0, done = 0;
@@ -569,11 +888,14 @@ static void t_list_notes(ToolCtx *c)
         free(s);
         day_str(notes[i].mtime, d, sizeof d);
         outf(c, "- %s · %s · %ld caracteres", notes[i].title, d, n);
+        if (notes[i].tags[0]) outf(c, " · %s", notes[i].tags);
         if (pend || done) outf(c, " · %d tareas pendientes, %d hechas", pend, done);
         outf(c, "\n");
+        shown++;
     }
-    if (!nnotes) outf(c, "El Cuaderno está vacío.");
-    snprintf(c->step, sizeof c->step, "Mirado el Cuaderno: %d nota%s", nnotes, nnotes == 1 ? "" : "s");
+    if (!shown) outf(c, filter ? "No hay notas con la etiqueta #%s." : "El Cuaderno está vacío.", tf);
+    if (filter) snprintf(c->step, sizeof c->step, "Mirado el Cuaderno: %d nota%s con #%.40s", shown, shown == 1 ? "" : "s", tf);
+    else snprintf(c->step, sizeof c->step, "Mirado el Cuaderno: %d nota%s", shown, shown == 1 ? "" : "s");
 }
 
 static void t_read_note(ToolCtx *c)
@@ -592,7 +914,7 @@ static void t_search_notes(ToolCtx *c)
 {
     char q[200], qf[400];
     if (!arg_str(c, "query", q, sizeof q)) { outf(c, "Falta query."); return; }
-    tools_fold(q, qf, sizeof qf);
+    pockit_fold(q, qf, sizeof qf);
     scan_notes();
     int found = 0;
     char line[2048];
@@ -615,20 +937,37 @@ static void new_note_path(char *out, size_t n)
 {
     struct stat st;
     long t = time(NULL);
-    do snprintf(out, n, NOTES_DIR "/%ld.md", t++); while (!stat(out, &st));
+    do snprintf(out, n, "%s/%ld.md", notes_dir(), t++); while (!stat(out, &st));
+}
+
+/* «niebla, #unamuno estudio» → «#niebla #unamuno #estudio» */
+static void tags_line(const char *in, JBuf *b)
+{
+    char raw[400], tg[12][48];
+    snprintf(raw, 200, " %s", in);   /* hueco para las # que se añaden */
+    for (char *p = raw; *p; p++) if (*p == ',' || *p == ';') *p = ' ';
+    for (char *p = raw; *p; p++) if (*p == ' ' && p[1] && p[1] != ' ' && p[1] != '#') { memmove(p + 2, p + 1, strlen(p + 1) + 1); p[1] = '#'; }
+    int n = pockit_tags(raw, tg, 12);
+    for (int i = 0; i < n; i++) { jb_cat(b, i ? " #" : "#"); jb_cat(b, tg[i]); }
 }
 
 static void t_create_note(ToolCtx *c)
 {
-    char title[200];
+    char title[200], tags[300];
     char *content = arg_dup(c, "content");
     if (!arg_str(c, "title", title, sizeof title)) snprintf(title, sizeof title, "Nota");
-    mkdir(NOTES_DIR, 0755);
     char path[600];
     new_note_path(path, sizeof path);
     JBuf b = { 0 };
-    if (!content || strncmp(content, "# ", 2)) { jb_cat(&b, "# "); jb_cat(&b, title); jb_cat(&b, "\n\n"); }
-    if (content) jb_cat(&b, content);
+    if (!content || strncmp(content, "# ", 2)) { jb_cat(&b, "# "); jb_cat(&b, title); jb_cat(&b, "\n"); }
+    else { const char *nl = strchr(content, '\n'); jb_put(&b, content, nl ? nl - content + 1 : (long)strlen(content)); if (!nl) jb_cat(&b, "\n"); }
+    if (arg_str(c, "tags", tags, sizeof tags)) { long before = b.len; tags_line(tags, &b); if (b.len > before) jb_cat(&b, "\n"); }
+    jb_cat(&b, "\n");
+    if (content) {
+        const char *body = content;
+        if (!strncmp(content, "# ", 2)) { const char *nl = strchr(content, '\n'); body = nl ? nl + 1 : ""; while (*body == '\n') body++; }
+        jb_cat(&b, body);
+    }
     if (!b.len || b.s[b.len - 1] != '\n') jb_cat(&b, "\n");
     snprintf(c->undo, sizeof c->undo, "-|%s", path);
     if (write_file(path, b.s, b.len)) {
@@ -643,7 +982,7 @@ static void t_create_note(ToolCtx *c)
 static long section_end(const char *s, const char *h)
 {
     char hf[400];
-    tools_fold(h, hf, sizeof hf);
+    pockit_fold(h, hf, sizeof hf);
     const char *p = s;
     int level = 0;
     long found = -1;
@@ -785,7 +1124,7 @@ static void t_set_task(ToolCtx *c)
     char want[200];
     if (arg_str(c, "note", want, sizeof want)) { only = find_note(c, "note", NULL); if (only < 0) return; }
     else scan_notes();
-    tools_fold(task, tf, sizeof tf);
+    pockit_fold(task, tf, sizeof tf);
     int hits = 0, hn = -1;
     long hoff = 0;
     char hl[300] = "";
@@ -1120,8 +1459,18 @@ const Tool TOOLS[] = {
       "Lee el texto de un capítulo o relato, en partes de unos 7.000 caracteres. Sin chapter, el capítulo por el que va. Solo hasta donde va salvo include_unread.",
       P(BOOK "," S("chapter", "Número de book_chapters o parte de su título") "," I("part", "Parte del capítulo, desde 1") "," UNREAD), t_read_book },
     { "book_memory", "Repasando lo que sé del libro",
-      "Lo que Pockit ya tiene guardado de un libro: resúmenes por tramos de «Dónde voy» y descripciones de personajes. Barato: úsalo antes de leer mucho texto.",
+      "Lo que Pockit ya tiene guardado de un libro: resúmenes de lo leído, quién es quién y las notas del Cuaderno con su etiqueta. Barato: úsalo antes de leer texto.",
       P(BOOK), t_book_memory },
+    { "summarize_reading", "Resumiendo lo leído",
+      "Resume lo leído y lo guarda en Lectura → Dónde voy; lo ya resumido no se vuelve a pagar. scope=recent (por defecto): lo último antes de donde va (unas 20 páginas, o desde el principio del capítulo o relato), barato y rápido: úsalo para «recuérdame qué ha pasado». scope=all: todo lo leído; si es mucho, devuelve antes el coste y el tiempo para que preguntes al usuario, y solo se hace con confirm=true. No leas el libro parte a parte para esto.",
+      P(BOOK "," E("scope", "recent (por defecto) o all", "\"recent\",\"all\"") "," B("confirm", "true solo si el usuario ya aceptó el coste que se le dijo")), t_summarize_reading },
+    { "review_characters", "Revisando los personajes",
+      "Revisa una vez los nombres del libro: separa personajes de lugares y otras cosas y dice quién es cada uno a partir de las frases donde aparece por primera vez, sin destripes. Lo guarda en Lectura → Personajes, donde cada uno sale cuando el lector llega a él. Solo procesa lo que no estaba revisado; si ya lo estaba, lo dice sin gastar. Devuelve solo los que ya han salido. Úsalo para «quiénes son los personajes» o «revisa los personajes».",
+      P(BOOK), t_review_characters },
+    { "remember_character", "Guardando en Personajes",
+      "Guarda en Lectura → Personajes quién es alguien (o que un nombre es un lugar u otra cosa), para que el lector lo vea sin volver a preguntar. Úsalo cuando averigües quién es un personaje o un nombre de la lista. Descripción breve y sin destripes: solo hasta donde va.",
+      PR("\"name\",\"description\"", S("name", "El nombre tal como sale en el libro") "," E("kind", "personaje (por defecto), lugar u otro", "\"personaje\",\"lugar\",\"otro\"") "," S("description", "Quién es, en 15 palabras como máximo") "," BOOK),
+      t_remember_character },
     { "list_highlights", "Repasando tus subrayados",
       "Subrayados y notas que el usuario hizo en el lector, del más nuevo al más viejo.",
       P(BOOK "," S("query", "Filtrar por texto") "," I("days", "Solo los de los últimos N días") "," I("limit", "Máximo, por defecto 20")), t_list_highlights },
@@ -1129,12 +1478,13 @@ const Tool TOOLS[] = {
       "Palabras que consultó en el diccionario del lector, con su definición y si ya las marcó como aprendidas en Pockit.",
       P(BOOK "," E("status", "pending (por aprender), learned o all", "\"pending\",\"learned\",\"all\"") "," S("query", "Filtrar por texto") "," I("days", "Solo las de los últimos N días") "," I("limit", "Máximo, por defecto 30")),
       t_list_words },
-    { "list_notes", "Mirando el Cuaderno", "Notas del Cuaderno (Markdown) con fecha y tareas.", P(), t_list_notes },
+    { "list_notes", "Mirando el Cuaderno", "Notas del Cuaderno (Markdown) con fecha, etiquetas y tareas.",
+      P(S("tag", "Solo las de esta etiqueta, sin # (la de un libro sale en list_books)")), t_list_notes },
     { "read_note", "Leyendo la nota", "Lee una nota entera.", PR("\"note\"", S("note", "Título o parte del título")), t_read_note },
     { "search_notes", "Buscando en tus notas", "Busca un texto en todas las notas; devuelve las líneas.", PR("\"query\"", S("query", "Texto a buscar")), t_search_notes },
     { "create_note", "Creando la nota",
-      "Crea una nota nueva en el Cuaderno. content en Markdown sencillo: ## secciones, listas, - [ ] tareas, **negrita**. Sin tablas.",
-      PR("\"title\",\"content\"", S("title", "Título corto") "," S("content", "Cuerpo en Markdown, sin repetir el título")), t_create_note },
+      "Crea una nota nueva en el Cuaderno. content en Markdown sencillo: ## secciones, listas, - [ ] tareas, **negrita**. Sin tablas. Si la nota trata de un libro, ponle su etiqueta: así sale en la ficha del libro.",
+      PR("\"title\",\"content\"", S("title", "Título corto") "," S("content", "Cuerpo en Markdown, sin repetir el título") "," S("tags", "Etiquetas separadas por espacios, sin #: la del libro (list_books) y otras si las pide")), t_create_note },
     { "edit_note", "Cambiando la nota",
       "Cambia una nota: append (al final), after_heading (al final de la sección de un título), replace (cambia old_text exacto por text) o rewrite (la reescribe entera).",
       PR("\"note\",\"text\"", S("note", "Título de la nota") "," E("mode", "Por defecto append", "\"append\",\"after_heading\",\"replace\",\"rewrite\"") "," S("text", "Texto nuevo en Markdown") "," S("heading", "Para after_heading: el título de la sección") "," S("old_text", "Para replace: el fragmento exacto que se cambia")),

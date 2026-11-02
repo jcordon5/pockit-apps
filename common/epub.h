@@ -483,10 +483,11 @@ static long ep_position(const EpBook *b, const char *position, double progress)
 typedef struct {
     char name[64];
     int count, first_ch, with[3], nwith;
+    int kind;   /* 0 alguien, 1 lugar, 2 otra cosa (según cómo se nombra) */
     long first;
 } EpPerson;
 
-typedef struct { char key[48]; char shown[64]; int cap, start, lower; long first; } EpWord;
+typedef struct { char key[48]; char shown[64]; int cap, start, lower, place, thing; long first; } EpWord;
 
 static unsigned ep_cp(const unsigned char *s, int *n)
 {
@@ -592,7 +593,13 @@ static void ep_count_word(void *vc, long off, int len, int up, int sentence, int
     if (!w->key[0]) { snprintf(w->key, sizeof w->key, "%s", key); w->first = -1; }
     if (!up) w->lower++;
     else if (sentence) w->start++;
-    else { w->cap++; if (w->first < 0) { w->first = off; snprintf(w->shown, sizeof w->shown, "%.*s", len < 60 ? len : 60, c->text + off); } }
+    else {
+        w->cap++;
+        if (w->first < 0) { w->first = off; snprintf(w->shown, sizeof w->shown, "%.*s", len < 60 ? len : 60, c->text + off); }
+        /* «en París», «hacia Pekín»: lugar; «la Historia», «las Matemáticas»: una cosa, no alguien */
+        if (!strcmp(c->prev, "en") || !strcmp(c->prev, "hacia") || !strcmp(c->prev, "desde")) w->place++;
+        if (!strcmp(c->prev, "la") || !strcmp(c->prev, "las") || !strcmp(c->prev, "los")) w->thing++;
+    }
     /* dos nombres seguidos («Sancho Panza»): se cuentan para unirlos luego */
     if (up && joined && c->prev_up) {
         char bk[96];
@@ -640,6 +647,7 @@ static int ep_people(const EpBook *b, long upto, EpPerson *out, int max)
         snprintf(p->name, sizeof p->name, "%s", w->shown);
         snprintf(keys[n], 48, "%s", w->key);
         p->count = w->cap + w->start;
+        p->kind = w->place >= 2 && w->place * 5 >= w->cap ? 1 : w->thing * 2 >= w->cap ? 2 : 0;
         p->first = w->first;
         p->first_ch = ep_chapter_at(b, w->first);
         n++;
@@ -695,6 +703,35 @@ static int ep_people(const EpBook *b, long upto, EpPerson *out, int max)
     free(all);
     free(keys);
     return n;
+}
+
+/* Dónde sale un nombre (palabra entera) antes de `upto`, sin contar índices ni avisos legales. */
+static int ep_mentions(const EpBook *b, const char *name, long upto, long *offs, int max)
+{
+    int n = 0;
+    size_t nl = strlen(name);
+    if (!nl) return 0;
+    for (const char *p = b->text; n < max && (p = strstr(p, name)) && p < b->text + upto; p += nl) {
+        long o = p - b->text;
+        unsigned char before = o ? (unsigned char)p[-1] : ' ', after = (unsigned char)p[nl];
+        if (isalnum(before) || before >= 0x80 || isalnum(after) || (after >= 0xC0)) continue;   /* «Carlos» no vale dentro de «Carlota» */
+        if (ep_skip_to(b, o) != o || ep_is_toc(&b->ch[ep_chapter_at(b, o)])) continue;
+        offs[n++] = o;
+    }
+    return n;
+}
+
+/* La frase (o el trozo de unos 400 caracteres) alrededor de off. */
+static void ep_sentence(const EpBook *b, long off, char *out, size_t n)
+{
+    const char *p = b->text + off, *s = p, *e = p;
+    while (s > b->text && s[-1] != '.' && s[-1] != '\n' && s[-1] != '!' && s[-1] != '?' && p - s < 260) s--;
+    while (*e && *e != '.' && *e != '\n' && *e != '!' && *e != '?' && e - p < 260) e++;
+    if (*e && *e != '\n') e++;
+    while (((unsigned char)*e & 0xC0) == 0x80) e++;   /* sin partir letras (UTF-8) */
+    while (((unsigned char)*s & 0xC0) == 0x80) s++;
+    while (*s == ' ' || *s == '-' || ((unsigned char)s[0] == 0xE2 && (unsigned char)s[1] == 0x80 && ((unsigned char)s[2] == 0x94 || (unsigned char)s[2] == 0x93))) s += *s == ' ' || *s == '-' ? 1 : 3;
+    snprintf(out, n, "%s%.*s%s", s > b->text && s[-1] != '\n' && s[-1] != '.' ? "…" : "", (int)(e - s), s, *e && e[-1] != '.' && e[-1] != '!' && e[-1] != '?' ? "…" : "");
 }
 
 /* Hasta dos frases (cortas) donde sale el nombre, para que la IA lo describa sin leer el libro. */
