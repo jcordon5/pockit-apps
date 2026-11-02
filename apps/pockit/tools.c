@@ -572,7 +572,8 @@ static const char *SYS_PERSONAJES =
     "Te paso nombres propios que salen en un libro, cada uno con una o dos frases donde aparece. Clasifica cada nombre: "
     "personaje (alguien, persona o animal que actúa), lugar (ciudad, país, calle, puente, edificio…) u otro (obras, instituciones, conceptos, "
     "o un nombre que aquí forma parte de un lugar, como «Carlos» en «puente de Carlos»). Usa SOLO esas frases: no uses lo que sepas del "
-    "libro ni adelantes nada. Responde una línea por nombre, con este formato exacto y nada más:\n"
+    "libro ni adelantes nada. Si las frases no dejan claro quién es, no lo inventes: di solo lo que se ve (por ejemplo, «mencionado junto a X»). "
+    "Responde una línea por nombre, con este formato exacto y nada más:\n"
     "Nombre | personaje, lugar u otro | quién o qué es, en 12 palabras como máximo";
 
 /* En qué % del libro sale por primera vez (-1 si no se sabe): la web lo usa para no destripar. */
@@ -586,6 +587,24 @@ static int first_pct(const char *name)
         if (!ep_mentions(&eb, first, eb.len, &o, 1)) return -1;
     }
     return (int)(100.0 * o / eb.len);
+}
+
+/* Hasta cuatro frases de las primeras veces que sale (sin títulos ni frases sueltas de dos palabras):
+ * con una sola, a veces no se sabe nada de él y la IA se lo inventa. */
+static void first_mentions(const char *name, char *out, size_t n)
+{
+    static long offs[40];
+    int k = ep_mentions(&eb, name, eb.len, offs, 40), got = 0;
+    out[0] = 0;
+    char prev[700] = "", one[700];
+    for (int i = 0; i < k && got < 4 && strlen(out) + 200 < n; i++) {
+        ep_sentence(&eb, offs[i], one, sizeof one);
+        if (strlen(one) < 50 || !strcmp(one, prev)) continue;   /* un título, o la misma frase */
+        size_t l = strlen(out);
+        snprintf(out + l, n - l, "%s%.300s", got ? " / " : "", one);
+        snprintf(prev, sizeof prev, "%s", one);
+        got++;
+    }
 }
 
 typedef struct { char names[200][64]; int n; } NameSet;
@@ -619,7 +638,7 @@ static void t_review_characters(ToolCtx *c)
     NameSet *saved = calloc(1, sizeof *saved);
     each_line(b.title, "personajes.tsv", saved_name, saved);
     JBuf u = { 0 };
-    char line[1200], ctx[900];
+    char line[1600], ctx[1300];
     snprintf(line, sizeof line, "Libro: «%s»%s%s.\n", b.title, b.author[0] ? " de " : "", b.author);
     jb_cat(&u, line);
     int asked = 0, later = 0;
@@ -630,7 +649,7 @@ static void t_review_characters(ToolCtx *c)
         for (int k = 0; k < saved->n; k++) if (same_person(saved->names[k], found[i].name)) known = 1;
         for (int k = 0; k < asked; k++) if (!strcmp(done_names[k], found[i].name)) known = 1;
         if (known) continue;   /* ya revisado: no se vuelve a pagar */
-        ep_context(&eb, found[i].name, eb.len, ctx, sizeof ctx);   /* sus primeras apariciones */
+        first_mentions(found[i].name, ctx, sizeof ctx);   /* sus primeras apariciones: nada de más adelante */
         snprintf(line, sizeof line, "\n%s: %s\n", found[i].name, ctx);
         jb_cat(&u, line);
         snprintf(done_names[asked++], 64, "%s", found[i].name);

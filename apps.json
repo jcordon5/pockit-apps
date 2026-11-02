@@ -5,7 +5,7 @@
       "id": "pockit",
       "file": "Pockit.app",
       "title": "Pockit",
-      "version": "2.2.2",
+      "version": "2.2.3",
       "summary": "Tu centro de lectura: Lectura, Cuaderno, Pockit AI, Fondos y Ajustes",
       "description": "Una sola app con todo: tus estadísticas y la ficha de cada libro (dónde vas, quién es quién y tus notas, sin destripes); el Cuaderno de notas y tareas con etiquetas; Pockit AI, un asistente opcional que conoce tus libros, subrayados y notas, te recuerda lo leído, toma apuntes y busca en internet; los fondos de reposo y los ajustes. Tus notas y chats pueden ir a tu Dropbox, y se actualiza desde el propio lector.",
       "needsKey": true,
