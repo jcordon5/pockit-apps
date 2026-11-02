@@ -193,6 +193,89 @@ static void load_gone(void)
     if (d) closedir(d);
 }
 
+/* Algunos diccionarios guardan la definición con formato HTML («<div><b>1.</b> …</div>»):
+ * se queda el texto, cada bloque en su línea. */
+static void strip_html(char *s)
+{
+    char *w = s;
+    for (char *r = s; *r; ) {
+        if (*r == '<') {
+            int block = !strncasecmp(r, "<div", 4) || !strncasecmp(r, "</div", 5) || !strncasecmp(r, "<br", 3) || !strncasecmp(r, "<p", 2) || !strncasecmp(r, "</p", 3);
+            char *e = strchr(r, '>');
+            if (!e) break;
+            if (block && w > s && w[-1] != '\n') *w++ = '\n';
+            r = e + 1;
+            continue;
+        }
+        if (*r == '&') {
+            static const char *ENT[][2] = { { "&amp;", "&" }, { "&lt;", "<" }, { "&gt;", ">" }, { "&quot;", "\"" }, { "&#39;", "'" }, { "&nbsp;", " " } };
+            int done = 0;
+            for (int i = 0; i < 6 && !done; i++) { size_t l = strlen(ENT[i][0]); if (!strncmp(r, ENT[i][0], l)) { *w++ = ENT[i][1][0]; r += l; done = 1; } }
+            if (done) continue;
+        }
+        *w++ = *r++;
+    }
+    *w = 0;
+    while (w > s && (w[-1] == '\n' || w[-1] == ' ')) *--w = 0;
+}
+
+/* Los subrayados y palabras de cada libro, también en Libros/<etiqueta>/subrayados.md: así se
+ * ven en la web (Dropbox) sin conectar el lector. Solo se escribe si cambió. */
+static char vstate[MAX_MARKS];   /* por marca: 0 por aprender, 'a' aprendida, 'q' quitada (ver «vocabulario») */
+static void export_marks(void)
+{
+    static const char *MES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+    for (int b = 0; b < nbooks; b++) {
+        Book *bk = &books[b];
+        if (!bk->marks && !bk->words) continue;
+        JBuf md = { 0 };
+        char line[600];
+        snprintf(line, sizeof line, "# Subrayados de «%s»\n", bk->title);
+        jb_cat(&md, line);
+        for (int pass = 0; pass < 2; pass++) {
+            int first = 1;
+            for (int i = nmarks - 1; i >= 0; i--) {   /* del más viejo al más nuevo: el orden de lectura */
+                Mark *m = &marks[i];
+                if (m->word != pass || strcmp(m->book, bk->title) || (pass && vstate[i] == 'q')) continue;
+                if (first && pass) jb_cat(&md, "\n## Palabras\n");
+                first = 0;
+                struct tm tm;
+                time_t t = m->ts;
+                localtime_r(&t, &tm);
+                if (!pass) {
+                    jb_cat(&md, "\n> ");
+                    for (const char *q = m->text; *q; q++) { if (*q == '\n') jb_cat(&md, "\n> "); else jb_put(&md, q, 1); }
+                    if (m->note && m->note[0]) { jb_cat(&md, "\n\n"); jb_cat(&md, m->note); }
+                    snprintf(line, sizeof line, "\n\n*%d %s %d*\n", tm.tm_mday, MES[tm.tm_mon], tm.tm_year + 1900);
+                    jb_cat(&md, line);
+                } else {
+                    snprintf(line, sizeof line, "\n- **%s**%s: ", m->text, vstate[i] == 'a' ? " (aprendida)" : "");
+                    jb_cat(&md, line);
+                    char def[300];
+                    snprintf(def, sizeof def, "%.250s", m->note ? m->note : "");
+                    for (char *q = def; *q; q++) if (*q == '\n') *q = ' ';
+                    jb_cat(&md, def);
+                }
+            }
+        }
+        jb_cat(&md, "\n");
+        char dir[800], p[900];
+        pockit_book_dir(bk->title, dir, sizeof dir);
+        snprintf(p, sizeof p, "%s/subrayados.md", dir);
+        FILE *f = fopen(p, "r");
+        int same = 0;
+        if (f) {
+            char *old = malloc(md.len + 2);
+            size_t r = fread(old, 1, md.len + 1, f);
+            same = r == (size_t)md.len && !memcmp(old, md.s, md.len);
+            free(old);
+            fclose(f);
+        }
+        if (!same && (f = fopen(p, "w"))) { fwrite(md.s, 1, md.len, f); fclose(f); }
+        free(md.s);
+    }
+}
+
 static int data_loaded;
 static void load_data(void)
 {
@@ -268,6 +351,7 @@ static void load_data(void)
             m->word = strstr(anchor, "\"translation\"") || strstr(note, "\"context\"");
             if (m->word) {
                 m->note = json_text(note, "text");
+                if (m->note && strchr(m->note, '<')) strip_html(m->note);
                 if (m->note) {
                     char *r = m->note, *w = m->note;
                     while (*r == ' ') r++;
@@ -296,7 +380,6 @@ static void load_data(void)
 
 /* ---------- vocabulario: aprendidas y quitadas (archivo propio, no se toca la base del lector) ---------- */
 #define VOCAB FLASHDIR "/system/config/lectura-vocabulario.txt"
-static char vstate[MAX_MARKS];   /* por marca: 0 por aprender, 'a' aprendida, 'q' quitada */
 
 static void load_vocab(void)
 {
@@ -308,7 +391,7 @@ static void load_vocab(void)
         if (l < 3 || buf[1] != '\t') continue;
         for (int i = 0; i < nmarks; i++) if (marks[i].word && !strcmp(marks[i].text, buf + 2)) vstate[i] = buf[0];
     }
-    if (f) fclose(f);
+    if (f) fclose(f);    export_marks();   /* con el estado de las palabras ya leído */
 }
 
 static void save_vocab(void)

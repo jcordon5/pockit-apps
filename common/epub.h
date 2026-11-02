@@ -264,8 +264,8 @@ static int ep_contains(const char *h, long hl, const char *n)
     return 0;
 }
 
-/* Marca lo que no es la historia: 5 o más líneas cortas seguidas (un índice, aunque no se
- * llame así) y los párrafos con el aviso de Project Gutenberg. No se mandan a la IA (ahorra
+/* Marca lo que no es la historia: 5 o más líneas cortas o sin punto final seguidas (un índice,
+ * aunque no se llame así) y los párrafos con el aviso de Project Gutenberg. No se mandan a la IA (ahorra
  * tokens y evita que un índice destripe capítulos) ni cuentan como apariciones. */
 static void ep_mark_skips(EpBook *b)
 {
@@ -280,7 +280,12 @@ static void ep_mark_skips(EpBook *b)
         while (e < b->len && b->text[e] != '\n') e++;
         int len = (int)(e - i), legal = 0;
         if (len && ep_contains(b->text + i, len, "Project Gutenberg")) legal = 1;
-        int short_line = len > 0 && len < 60;
+        /* una línea de índice: corta, o sin punto final (un título de capítulo, aunque sea largo) */
+        unsigned char last = len ? (unsigned char)b->text[e - 1] : 0;
+        int ends = last == '.' || last == '!' || last == '?' || last == ':' || last == ';' || last == '"' || last == ')'
+                   || (len >= 2 && (unsigned char)b->text[e - 2] == 0xC2 && last == 0xBB)                    /* » */
+                   || (len >= 3 && (unsigned char)b->text[e - 3] == 0xE2 && (unsigned char)b->text[e - 2] == 0x80); /* … ” */
+        int short_line = len > 0 && (len < 60 || (len < 300 && !ends));
         if (short_line) { if (run_s < 0) run_s = i; run_n++; }
         if (!short_line || e >= b->len) {
             long run_e = short_line ? e : i;
