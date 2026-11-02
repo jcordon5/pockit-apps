@@ -58,7 +58,7 @@ typedef struct {
 
 static Item *items;
 static int nitems, cap;
-static char token[512];
+static char token[4096];   /* los permisos de Dropbox pasan de 1.300 caracteres */
 static long token_until;
 
 /* ---------- utilidades ---------- */
@@ -204,10 +204,14 @@ static int rpc(const char *name, const char *json)
     if (!b) return -1;
     fputs(json, b);
     fclose(b);
-    char url[200], hdr[700];
+    char url[200];
     snprintf(url, sizeof url, "%s/2/%s", api(), name);
-    snprintf(hdr, sizeof hdr, "Authorization: Bearer %s\nContent-Type: application/json\n", token);
-    int code = dbx_http(url, hdr, TMP_BODY, 0, TMP_OUT);
+    JBuf h = { 0 };
+    jb_cat(&h, "Authorization: Bearer ");
+    jb_cat(&h, token);
+    jb_cat(&h, "\nContent-Type: application/json\n");
+    int code = dbx_http(url, h.s, TMP_BODY, 0, TMP_OUT);
+    free(h.s);
     remove(TMP_BODY);
     return code;
 }
