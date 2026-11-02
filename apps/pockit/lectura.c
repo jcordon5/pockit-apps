@@ -1103,7 +1103,7 @@ static void load_people(void)
         *t1 = *t2 = 0;
         t2[1 + strcspn(t2 + 1, "\n")] = 0;
         Saved *s = &saved[nsaved++];
-        snprintf(s->name, sizeof s->name, "%s", buf); snprintf(s->kind, sizeof s->kind, "%s", t1 + 1); snprintf(s->desc, sizeof s->desc, "%s", t2 + 1);
+        snprintf(s->name, sizeof s->name, "%s", buf); snprintf(s->kind, sizeof s->kind, "%s", t1 + 1); snprintf(s->desc, sizeof s->desc, "%.*s", (int)strcspn(t2 + 1, "\t"), t2 + 1);
     }
     if (f) fclose(f);
     /* filas: primero lo que encuentra el lector; lo que Pockit AI dice que es un lugar o una cosa, aparte */

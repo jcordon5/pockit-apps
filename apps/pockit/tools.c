@@ -423,6 +423,7 @@ static int mem_person(char *line, void *vx)
     *t1 = *t2 = 0;
     if (!reached(line, x->upto)) return 1;   /* aún no ha salido: sin destripes */
     if (!x->n) outf(x->c, "\n\nQuién es quién (guardado en Lectura → Personajes):\n");
+    t2[1 + strcspn(t2 + 1, "\t")] = 0;   /* la 4.ª columna: dónde sale por primera vez, para la web */
     outf(x->c, "- %s (%s): %s\n", line, t1 + 1, t2 + 1);
     x->n++;
     return !out_full(x->c);
@@ -574,6 +575,19 @@ static const char *SYS_PERSONAJES =
     "libro ni adelantes nada. Responde una línea por nombre, con este formato exacto y nada más:\n"
     "Nombre | personaje, lugar u otro | quién o qué es, en 12 palabras como máximo";
 
+/* En qué % del libro sale por primera vez (-1 si no se sabe): la web lo usa para no destripar. */
+static int first_pct(const char *name)
+{
+    long o;
+    if (eb_state != 0 || !eb.len) return -1;
+    if (!ep_mentions(&eb, name, eb.len, &o, 1)) {
+        char first[64];
+        snprintf(first, sizeof first, "%.*s", (int)strcspn(name, " "), name);
+        if (!ep_mentions(&eb, first, eb.len, &o, 1)) return -1;
+    }
+    return (int)(100.0 * o / eb.len);
+}
+
 typedef struct { char names[200][64]; int n; } NameSet;
 static int saved_name(char *line, void *vx)
 {
@@ -647,7 +661,7 @@ static void t_review_characters(ToolCtx *c)
                 for (char *t = ds; *t; t++) if (*t == '\t') *t = ' ';
                 const char *kind = !strncmp(kd, "lugar", 5) ? "lugar" : !strncmp(kd, "otro", 4) ? "otro" : "personaje";
                 if (!nm[0]) continue;
-                fprintf(f, "%s\t%s\t%s\n", nm, kind, ds);
+                fprintf(f, "%s\t%s\t%s\t%d\n", nm, kind, ds, first_pct(nm));
                 added++;
                 places += strcmp(kind, "personaje") != 0;
             }
@@ -696,7 +710,7 @@ static void t_remember_character(ToolCtx *c)
     pockit_fold(name, x.want, sizeof x.want);
     each_line(b.title, "personajes.tsv", person_keep, &x);
     char line[400], dir[800], p[900];
-    snprintf(line, sizeof line, "%s\t%s\t%s\n", name, kind, desc);
+    snprintf(line, sizeof line, "%s\t%s\t%s\t%d\n", name, kind, desc, eb_state == 0 && !strcmp(eb_path, b.path) ? first_pct(name) : -1);
     jb_cat(&x.keep, line);
     pockit_book_dir(b.title, dir, sizeof dir);
     snprintf(p, sizeof p, "%s/personajes.tsv", dir);
