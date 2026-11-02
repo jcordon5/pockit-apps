@@ -2,10 +2,12 @@
  * datos.c: dónde viven tus cosas y cómo se enlazan entre módulos.
  *
  *  - Tus datos son texto: Notas/ (el Cuaderno), Chats/ (Pockit AI) y Libros/ (lo que Pockit
- *    sabe de cada libro: resúmenes, personajes y una ficha). Viven en una sola carpeta:
- *    Pockit/ en el lector o, si se elige en Ajustes, Dropbox PocketBook/Pockit/, que la
- *    sincronización de Dropbox del propio lector sube a la nube. Sin conexión no pasa nada:
- *    se escribe en la carpeta y se sube cuando vuelve la wifi.
+ *    sabe de cada libro: resúmenes, personajes y una ficha). Viven en Pockit/, en el lector. Si
+ *    lo enlazas con Dropbox desde pockit.yous.dev, Pockit los sincroniza con la carpeta /Pockit
+ *    de tu Dropbox (nube.c). Sin conexión no pasa nada: se sincroniza cuando vuelve la wifi.
+ *  - Hasta la 2.2.4 se podían guardar en Dropbox PocketBook/Pockit para que los subiera la
+ *    sincronización del propio lector, pero esa solo sabe subir archivos nuevos (si uno cambia,
+ *    sube una copia «(1)» y da error). Al enlazar Pockit, vuelven a Pockit/.
  *  - Cada libro se reconoce por su título, no por su archivo: si lo borras, lo mueves o
  *    bajas otra edición, lo que Pockit sabía de él sigue ahí (Libros/<etiqueta>/).
  *  - Etiquetas: #palabra en cualquier nota. La de un libro sale de su título en minúsculas,
@@ -25,7 +27,7 @@
 #include "pockit.h"
 
 #define CACHE_DIR FLASHDIR "/system/config/pockit"
-#define WHERE_CFG CACHE_DIR "/datos.txt"            /* «dropbox» o nada */
+#define WHERE_CFG CACHE_DIR "/datos.txt"            /* «dropbox» (hasta la 2.2.4) o nada */
 #define DROPBOX_CFG FLASHDIR "/system/config/dropbox/dropbox.cfg"
 #define LOCAL_DIR FLASHDIR "/Pockit"
 
@@ -195,6 +197,28 @@ static void adopt_legacy(void)
     }
 }
 
+/* Los datos que estaban en la carpeta de Dropbox del lector vuelven a Pockit/ (con una copia antes).
+ * Lo normal es que ya lo haya hecho la web al enlazar; esto es por si no pudo. */
+static void adopt_native(void)
+{
+    char dbx[600], old[700];
+    if (!pockit_dropbox_ready(dbx, sizeof dbx)) snprintf(dbx, sizeof dbx, FLASHDIR "/Dropbox PocketBook");
+    snprintf(old, sizeof old, "%s/Pockit", dbx);
+    if (!is_dir(old)) return;
+    char stamp[40], backup[700];
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
+    mkdir(CACHE_DIR, 0755);
+    mkdir(CACHE_DIR "/copias", 0755);
+    snprintf(backup, sizeof backup, CACHE_DIR "/copias/%s", stamp);
+    move_tree(old, backup, 1);
+    move_tree(old, data_dir, 0);
+    rmdir(old);
+    remove(WHERE_CFG);
+}
+
 const char *pockit_data(void)
 {
     if (in_dropbox >= 0) return data_dir;
@@ -202,9 +226,10 @@ const char *pockit_data(void)
     char want[32] = "", dbx[600];
     FILE *f = fopen(WHERE_CFG, "r");
     if (f) { if (fgets(want, sizeof want, f)) want[strcspn(want, "\r\n")] = 0; fclose(f); }
-    if (!strcmp(want, "dropbox") && pockit_dropbox_ready(dbx, sizeof dbx)) { snprintf(data_dir, sizeof data_dir, "%s/Pockit", dbx); in_dropbox = 1; }
+    if (!nube_linked() && !strcmp(want, "dropbox") && pockit_dropbox_ready(dbx, sizeof dbx)) { snprintf(data_dir, sizeof data_dir, "%s/Pockit", dbx); in_dropbox = 1; }
     else snprintf(data_dir, sizeof data_dir, LOCAL_DIR);
     mkdir(data_dir, 0755);
+    if (nube_linked()) adopt_native();
     adopt_legacy();
     return data_dir;
 }
@@ -265,38 +290,6 @@ static void move_tree(const char *src, const char *dst, int copy)
         if (copy || rename(a, b)) { if (pk_copy_file(a, b) && !copy) remove(a); }
     }
     closedir(d);
-}
-
-int pockit_set_dropbox(int on, char *err, size_t n)
-{
-    pockit_data();
-    if (on == in_dropbox) return 1;
-    char dbx[600], to[700], stamp[40], backup[700];
-    if (on && !pockit_dropbox_ready(dbx, sizeof dbx)) {
-        snprintf(err, n, "Dropbox no está conectado en el lector. Conéctalo en Ajustes del lector → Cuentas y sincronización → Dropbox PocketBook.");
-        return 0;
-    }
-    /* antes de mover nada, una copia de todo en la memoria del lector (es texto: ocupa poco) */
-    time_t now = time(NULL);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
-    mkdir(CACHE_DIR, 0755);
-    mkdir(CACHE_DIR "/copias", 0755);
-    snprintf(backup, sizeof backup, CACHE_DIR "/copias/%s", stamp);
-    move_tree(data_dir, backup, 1);
-    if (on) {
-        snprintf(to, sizeof to, "%s/Pockit", dbx);
-        move_tree(data_dir, to, 0);   /* al pasar a Dropbox, se mueven */
-    } else {
-        snprintf(to, sizeof to, LOCAL_DIR);
-        move_tree(data_dir, to, 1);   /* al volver, se copian: lo de Dropbox se queda donde está */
-    }
-    FILE *f = fopen(WHERE_CFG, "w");
-    if (f) { fputs(on ? "dropbox\n" : "lector\n", f); fclose(f); }
-    in_dropbox = -1;
-    pockit_data();
-    return 1;
 }
 
 /* ---------- libros ---------- */

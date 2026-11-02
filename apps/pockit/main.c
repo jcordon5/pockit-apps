@@ -80,6 +80,7 @@ static void update_check(int force);
 
 /* ---------- Inicio ---------- */
 static int home_shown;
+static char sync_note[80];
 static int card_y0, card_y1, donde_y0, tiles_y0;
 #define TILE_H 180
 
@@ -112,6 +113,7 @@ static void draw_home(void)
     DrawString(M, 44, "Pockit");
     SetFont(f_small, SOFT);
     DrawTextRect(W / 2, 64, W / 2 - M, 40, date, ALIGN_RIGHT);
+    if (sync_note[0]) DrawTextRect(W / 2, 104, W / 2 - M, 36, sync_note, ALIGN_RIGHT | DOTS);
     int y = 150;
 
     /* lo que estás leyendo */
@@ -187,6 +189,29 @@ static void draw_home(void)
     POCKIT_REFRESH(home_shown);
 }
 
+/* Al abrir Pockit y al volver al Inicio, si la wifi ya está encendida: baja lo que cambió en la
+ * web y sube lo que cambió aquí. No espera a nada: el Inicio ya está pintado. */
+static long sync_tried;
+static void sync_status(const char *msg)
+{
+    snprintf(sync_note, sizeof sync_note, "%s", msg);
+    if (cur != MOD_HOME) return;
+    FillArea(W / 2, 100, W / 2 - M, 44, WHITE);
+    SetFont(f_small, SOFT);
+    DrawTextRect(W / 2, 104, W / 2 - M, 36, sync_note, ALIGN_RIGHT | DOTS);
+    PartialUpdate(W / 2, 100, W / 2 - M, 44);
+}
+static void home_sync_tick(void)
+{
+    if (cur != MOD_HOME || !nube_linked() || !(QueryNetwork() & NET_CONNECTED)) return;
+    if (time(NULL) - sync_tried < 120 && !nube_pending()) return;   /* sin cambios aquí, como mucho cada 2 minutos */
+    sync_tried = time(NULL);
+    sync_status("Sincronizando…");
+    char out[400];
+    int ok = nube_sync(0, NULL, out, sizeof out);
+    sync_status(ok ? "Dropbox al día" : "Dropbox: no se pudo sincronizar");
+}
+
 static void home_update_tick(void)
 {
     if (cur != MOD_HOME) return;
@@ -205,6 +230,7 @@ static int home_handler(int type, int par1, int par2)
     case EVT_SHOW:
         draw_home();
         SetWeakTimer("pk_update_check", home_update_tick, 4000);   /* después de pintar: el Inicio no espera a la red */
+        SetWeakTimer("pk_nube", home_sync_tick, 1200);
         break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
@@ -332,15 +358,29 @@ static void switch_at(int x, int y, int on)
     else { FillArea(x + 6, y + 6, 70, 52, 0xCCCCCC); SetFont(f_small, SOFT); DrawTextRect(x + 70, y + 6, 64, 52, "off", ALIGN_CENTER | VALIGN_MIDDLE); }
 }
 
-static void set_dropbox(int button)
+static void sync_progress(const char *msg)
+{
+    int by = H / 2 - 80;
+    FillArea(M, by, W - 2 * M, 160, WHITE);
+    for (int i = 0; i < 3; i++) DrawRect(M + i, by + i, W - 2 * M - 2 * i, 160 - 2 * i, BLACK);
+    SetFont(f_body, BLACK);
+    DrawTextRect(M + 30, by, W - 2 * M - 60, 160, msg, ALIGN_CENTER | VALIGN_MIDDLE);
+    PartialUpdate(M, by, W - 2 * M, 160);
+}
+
+static void on_data(int button)
 {
     if (button == 1) {
-        int on = !pockit_dropbox();
-        char err[300] = "";
-        if (pockit_set_dropbox(on, err, sizeof err))
-            Message(ICON_INFORMATION, "Pockit", on ? "Listo: tus datos están en Dropbox PocketBook/Pockit y se subirán cuando haya wifi."
-                                                   : "Listo: tus datos vuelven a este lector. Lo que había en Dropbox se queda allí.", 3500);
-        else Message(ICON_WARNING, "Pockit", err, 4000);
+        sync_progress("Sincronizando con Dropbox…");
+        char out[400];
+        nube_sync(1, sync_progress, out, sizeof out);
+        draw_ajustes();
+        Message(ICON_INFORMATION, "Dropbox", out, 3500);
+        return;
+    }
+    if (button == 2) {
+        nube_unlink();
+        Message(ICON_INFORMATION, "Dropbox", "Pockit ya no se sincroniza. Tus datos siguen en este lector y lo que hay en Dropbox se queda allí.", 4000);
     }
     draw_ajustes();
 }
@@ -358,19 +398,20 @@ static void draw_ajustes(void)
     char line[300], dbx[600];
 
     /* dónde viven tus notas, chats y lo que Pockit sabe de tus libros */
-    int in_dbx = pockit_dropbox(), ready = pockit_dropbox_ready(dbx, sizeof dbx);
+    int linked = nube_linked();
     SetFont(f_smallb, SOFT);
     DrawString(M, y, "TUS DATOS");
     y += 50;
     data_y = y;
     SetFont(f_body, BLACK);
-    DrawString(M, y + 10, "Sincronizar con Dropbox");
-    switch_at(W - M - 140, y, in_dbx);
+    DrawString(M, y, linked ? "Sincronizar con Dropbox  ›" : "Solo en este lector");
+    char last[400];
+    if (linked) nube_last(last, sizeof last);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 80, W - 2 * M, 130,
-                 in_dbx ? "Tus notas, chats y lo que Pockit sabe de tus libros están en Dropbox PocketBook/Pockit. El lector los sube a tu Dropbox cuando hay wifi; sin conexión se guardan igual."
-                 : ready ? "Ahora se guardan solo en este lector. Actívalo para tenerlos también en tu Dropbox: es texto, ocupa muy poco."
-                         : "Ahora se guardan solo en este lector. Para usar Dropbox, conéctalo antes en Ajustes del lector → Cuentas y sincronización → Dropbox PocketBook.",
+    DrawTextRect(M, y + 54, W - 2 * M, 150,
+                 linked ? last
+                 : pockit_dropbox() ? "Tus datos están en la carpeta Dropbox PocketBook, pero la sincronización del lector no sabe sustituir archivos. Para sincronizarlos bien, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox»."
+                 : "Para tener tus notas, chats y libros también en el móvil, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox».",
                  ALIGN_LEFT);
     y += 220;
     DrawLine(M, y, W - M, y, LINE);
@@ -429,11 +470,9 @@ static int ajustes_h(int type, int par1, int par2)
     case EVT_POINTERUP: {
         int x = par1, y = par2;
         if (pockit_back_hit(x, y)) { pockit_home(); return 1; }
-        if (y >= data_y - 10 && y < data_y + 200) {
-            Dialog(ICON_QUESTION, "Dropbox",
-                   pockit_dropbox() ? "¿Dejar de usar Dropbox? Tus datos se copian de vuelta a este lector; lo que hay en Dropbox se queda allí."
-                                    : "¿Guardar tus datos en Dropbox? Tus notas, chats y lo que Pockit sabe de tus libros pasan a la carpeta Dropbox PocketBook/Pockit, y el lector los sube cuando tiene wifi. Antes se guarda una copia en el lector.",
-                   pockit_dropbox() ? "Dejar de usarlo" : "Activar", "Cancelar", set_dropbox);
+        if (y >= data_y - 10 && y < data_y + 200 && nube_linked()) {
+            Dialog3(ICON_QUESTION, "Dropbox", "Pockit sincroniza tus notas, chats y libros con la carpeta Pockit de tu Dropbox al abrirse y al cerrarse, si hay wifi.",
+                    "Sincronizar ahora", "Dejar de sincronizar", "Cancelar", on_data);
             return 1;
         }
         if (y >= ai_y - 10 && y < ai_y + 140 && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
@@ -464,6 +503,8 @@ static int main_handler(int type, int par1, int par2)
     }
     if (type == EVT_EXIT) {
         for (int m = 0; m < MOD_COUNT; m++) if (inited[m]) HANDLERS[m](EVT_EXIT, par1, par2);
+        char out[400];
+        if (nube_linked() && (QueryNetwork() & NET_CONNECTED) && nube_pending()) nube_sync(0, NULL, out, sizeof out);   /* lo que quede por subir */
         return 0;
     }
     return HANDLERS[cur](type, par1, par2);

@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.2.4"
+#define POCKIT_VERSION "2.3.0"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -36,12 +36,18 @@ void pockit_back(void);
 int pockit_back_hit(int x, int y);
 ibitmap *pockit_icon(int mod);              /* el icono de un módulo, 120 × 120 (liberar con free) */
 
-/* Tus datos (datos.c): Notas/, Chats/ y Libros/ en Pockit/ o en Dropbox PocketBook/Pockit/. */
+/* Tus datos (datos.c): Notas/, Chats/ y Libros/ en Pockit/ (o, hasta enlazar Pockit, en Dropbox PocketBook/Pockit/). */
 const char *pockit_data(void);
 void pockit_path(char *out, size_t n, const char *sub);   /* <datos>/<sub>, creada si no existe */
-int pockit_dropbox(void);                                  /* 1 si tus datos están en Dropbox */
+int pockit_dropbox(void);                                  /* 1 si tus datos siguen en la carpeta de Dropbox del lector */
 int pockit_dropbox_ready(char *folder, size_t n);          /* 1 si Dropbox está conectado en el lector */
-int pockit_set_dropbox(int on, char *err, size_t n);       /* mueve tus datos; 1 si salió bien */
+
+/* Sincronización con Dropbox (nube.c) */
+int nube_linked(void);                                     /* 1 si Pockit está enlazado con Dropbox */
+int nube_pending(void);                                    /* 1 si hay cambios en el lector sin subir */
+int nube_sync(int interactive, void (*progress)(const char *msg), char *out, size_t n);   /* 1 si fue bien; out: cómo fue */
+long nube_last(char *msg, size_t n);                       /* cuándo fue la última (0 si nunca) y cómo fue */
+void nube_unlink(void);
 void pockit_book_dir(const char *title, char *out, size_t n);       /* Libros/<etiqueta>/ de un libro */
 void pockit_book_adopt(const char *title, const char *cache_dir);   /* trae lo guardado por la 2.1 */
 void pockit_tag(const char *title, char *out, size_t n);  /* etiqueta de un libro, sin # */

@@ -213,15 +213,33 @@ static void load_note(const char *path)
     scroll_row = 0;
 }
 
+/* Solo si cambió: con Dropbox, cada escritura cuenta como «cambiada en el lector», se sube y
+ * choca con lo que se haya editado en la web mientras tanto. */
 static void save_note(void)
 {
+    long n = 0;
+    for (int i = 0; i < nlines; i++) n += strlen(lines[i]) + 1;
+    char *now = malloc(n + 1), *p = now;
+    if (!now) return;
+    for (int i = 0; i < nlines; i++) { size_t k = strlen(lines[i]); memcpy(p, lines[i], k); p += k; *p++ = '\n'; }
+    *p = 0;
+    FILE *f = fopen(cur_path, "r");
+    if (f) {
+        char *old = malloc(n + 2);
+        size_t got = old ? fread(old, 1, n + 1, f) : 0;
+        fclose(f);
+        int same = old && (long)got == n && !memcmp(old, now, n);
+        free(old);
+        if (same) { free(now); return; }
+    }
     char tmp[600];
     snprintf(tmp, sizeof tmp, "%s.tmp", cur_path);
-    FILE *f = fopen(tmp, "w");
-    if (!f) return;
-    for (int i = 0; i < nlines; i++) fprintf(f, "%s\n", lines[i]);
-    fclose(f);
-    rename(tmp, cur_path);
+    if ((f = fopen(tmp, "w"))) {
+        fwrite(now, 1, n, f);
+        fclose(f);
+        rename(tmp, cur_path);
+    }
+    free(now);
 }
 
 /* ---------- pantalla de la nota ---------- */

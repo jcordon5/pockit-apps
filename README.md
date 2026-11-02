@@ -21,7 +21,7 @@ Y aparte, con su propio icono para abrirlo de un toque, el **Modo bolsillo**: m�
 
 ## Tus datos, en el lector o en Dropbox
 
-Tus notas, chats y lo que Pockit sabe de cada libro son texto, en una carpeta `Pockit/`. En **Ajustes → Sincronizar con Dropbox** pasan a `Dropbox PocketBook/Pockit/`, y la sincronización de Dropbox que ya trae el lector los sube a tu cuenta cuando hay wifi (sin conexión se guardan igual). Antes de mover nada se guarda una copia en el lector.
+Tus notas, chats y lo que Pockit sabe de cada libro son texto, en una carpeta `Pockit/` del lector. Si lo enlazas con Dropbox desde [pockit.yous.dev](https://pockit.yous.dev) (por cable, en Tu lector → Apps), Pockit los sincroniza por su cuenta con la carpeta `/Pockit` de tu Dropbox al abrirse, al volver al Inicio y al cerrarse, si la wifi está encendida (`nube.c`). Lo que cambia en un solo sitio se copia al otro; si cambia en los dos, se quedan las dos versiones; lo borrado va a la papelera de Dropbox o a `system/config/pockit/papelera`. La sincronización de Dropbox del propio lector no sirve para esto: solo sabe subir archivos nuevos (si uno cambia, sube una copia «(1)» y da error).
 
 Cada libro se reconoce por su título, no por su archivo: si lo borras, lo mueves o bajas otra edición, sus resúmenes, sus personajes y tus notas siguen ahí, y la ficha guarda sus datos aunque ya no esté en el lector.
 

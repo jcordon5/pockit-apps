@@ -76,7 +76,7 @@ Antes de cambiar una nota se guarda una copia en `system/config/pockit/deshacer/
 
 ## Datos
 
-Todo es texto en la carpeta de tus datos (`Pockit/` o `Dropbox PocketBook/Pockit/`):
+Todo es texto en la carpeta de tus datos (`Pockit/`, que se sincroniza con `/Pockit` en tu Dropbox si lo enlazas):
 
 ```
 Notas/<n>.md                   el Cuaderno; #etiquetas en cualquier línea
