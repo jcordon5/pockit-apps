@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "apps": [
+    {
+      "id": "pockit",
+      "file": "Pockit.app",
+      "title": "Pockit",
+      "version": "2.4.0",
+      "summary": "Tu centro de lectura: Lectura, Cuaderno, Pockit AI, Fondos y Ajustes",
+      "description": "Una sola app con todo: tus estadísticas y la ficha de cada libro (dónde vas, quién es quién y tus notas, sin destripes); el Cuaderno de notas y tareas con etiquetas; Pockit AI, un asistente opcional que conoce tus libros, subrayados y notas, te recuerda lo leído, toma apuntes y busca en internet; los fondos de reposo y los ajustes. Se sincroniza con tu Dropbox para seguir en el móvil, y se actualiza desde el propio lector.",
+      "needsKey": true,
+      "shot": "pockit-inicio",
+      "replaces": [
+        {
+          "id": "cuaderno",
+          "file": "Cuaderno.app"
+        },
+        {
+          "id": "ia",
+          "file": "IA.app"
+        },
+        {
+          "id": "lectura",
+          "file": "Lectura.app"
+        }
+      ],
+      "en": {
+        "title": "Pockit",
+        "summary": "Your reading hub: Reading, Notebook, Pockit AI, Wallpapers and Settings",
+        "description": "One app with everything: your stats and a page for each book (where you are, who's who and your notes, without spoilers); the Notebook for notes and to-dos with tags; Pockit AI, an optional assistant that knows your books, highlights and notes, reminds you of what you've read, takes notes and searches the web; sleep-screen wallpapers and settings. It syncs with your Dropbox so you can carry on from your phone, and it updates from the reader itself."
+      }
+    },
+    {
+      "id": "bolsillo",
+      "file": "Bolsillo.app",
+      "title": "Modo bolsillo",
+      "version": "1.0.1",
+      "summary": "Música y audiolibros con el lector en el bolsillo",
+      "description": "Apaga la luz, ignora el táctil y no deja que el lector se duerma, con tu fondo de reposo y la canción que suena. Un botón de página te devuelve a donde estabas. Va aparte para abrirlo de un toque.",
+      "shot": "bolsillo",
+      "en": {
+        "title": "Pocket mode",
+        "summary": "Music and audiobooks with the reader in your pocket",
+        "description": "Turns off the light, ignores the touch screen and keeps the reader awake, with your sleep screen and the song that's playing. A page button takes you back to where you were. It's a separate app so you can open it with one tap."
+      }
+    }
+  ]
+}
