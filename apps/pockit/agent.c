@@ -124,6 +124,8 @@ static void context_note(JBuf *b)
         n++;
     }
     if (!n) jb_cat(b, " No está leyendo ningún libro ahora.");
+    /* el prompt de sistema es el mismo en los dos idiomas (se cachea); el idioma va aquí */
+    if (pockit_en()) jb_cat(b, " El lector está en inglés: responde en inglés, salvo que el usuario te escriba en otro idioma, y escribe en inglés lo que guardes (notas, resúmenes, personajes).");
     jb_cat(b, "]");
 }
 
@@ -134,7 +136,7 @@ static void show_steps(Steps *st, const char *doing)
     if (!st->ui || !st->ui->on_step) return;
     JBuf all = { 0 };
     if (st->done.len) jb_cat(&all, st->done.s);
-    if (doing) { jb_cat(&all, "» "); jb_cat(&all, doing); jb_cat(&all, "…\n"); }
+    if (doing) { jb_cat(&all, "» "); jb_cat(&all, T(doing)); jb_cat(&all, "…\n"); }
     st->ui->on_step(all.s ? all.s : "", st->ui->ctx);
     free(all.s);
 }
@@ -160,7 +162,7 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
 {
     memset(out, 0, sizeof *out);
     if (!ai_bearer()[0] && !ai_load_cfg()) {
-        snprintf(out->err, sizeof out->err, "Falta la clave de la IA. Ponla en pockit.yous.dev → Tu lector → Apps → IA.");
+        snprintf(out->err, sizeof out->err, T("Falta la clave de la IA. Ponla en pockit.yous.dev → Tu lector → Apps → IA."));
         return 0;
     }
     build_tools();
@@ -197,7 +199,7 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
         if (last && round)   /* la última vuelta: que responda con lo que tiene */
             jb_cat(&body, ",{\"role\":\"user\",\"content\":\"[Pockit: ya no quedan herramientas en esta consulta. Responde ahora con lo que tengas; si falta algo, dilo.]\"}");
         jb_cat(&body, "]}");
-        if (round) show_steps(&st, "Pensando");
+        if (round) show_steps(&st, T("Pensando"));
         AiResult r;
         int good = ai_stream(&body, "Pockit AI", ui ? ui->on_text : NULL, ui ? ui->ctx : NULL, &r);
         free(body.s);
@@ -209,7 +211,7 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
             ai_result_free(&r);
             if (!text[0]) {   /* se quedó buscando y no llegó a responder */
                 free(text);
-                snprintf(out->err, sizeof out->err, "Pockit AI se quedó buscando y no llegó a una respuesta. Prueba a pedirlo de forma más concreta (por ejemplo, con el nombre del libro o del capítulo).");
+                snprintf(out->err, sizeof out->err, T("Pockit AI se quedó buscando y no llegó a una respuesta. Prueba a pedirlo de forma más concreta (por ejemplo, con el nombre del libro o del capítulo)."));
                 ai_log_error("Pockit AI", out->err);
                 break;
             }
@@ -220,7 +222,7 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
         if (out->cost > COST_CAP) {
             char a[32];
             ai_money(out->cost, a, sizeof a);
-            snprintf(out->err, sizeof out->err, "Pockit AI se ha parado para no gastar de más: esta consulta ya iba por %s, mucho más de lo normal. Prueba a pedirlo de forma más concreta.", a);
+            snprintf(out->err, sizeof out->err, T("Pockit AI se ha parado para no gastar de más: esta consulta ya iba por %s, mucho más de lo normal. Prueba a pedirlo de forma más concreta."), a);
             ai_log_error("Pockit AI", out->err);
             ai_result_free(&r);
             break;
@@ -251,8 +253,8 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
             const char *args = call->args.s;
             int tn = json_parse(args, (int)strlen(args), t, 256);
             int quiet = 0;   /* sin línea de paso: no hizo nada nuevo */
-            if (!tool) { jb_cat(&res, "Esa herramienta no existe."); snprintf(c.step, sizeof c.step, "Herramienta desconocida: %.60s", call->name); }
-            else if (tn <= 0 || t[0].type != J_OBJ) { jb_cat(&res, "Los argumentos no son un objeto JSON válido; vuelve a intentarlo."); snprintf(c.step, sizeof c.step, "%s: argumentos no válidos", tool->doing); }
+            if (!tool) { jb_cat(&res, "Esa herramienta no existe."); snprintf(c.step, sizeof c.step, T("Herramienta desconocida: %.60s"), call->name); }
+            else if (tn <= 0 || t[0].type != J_OBJ) { jb_cat(&res, "Los argumentos no son un objeto JSON válido; vuelve a intentarlo."); snprintf(c.step, sizeof c.step, T("%s: argumentos no válidos"), T(tool->doing)); }
             else if (read > READ_BUDGET) { jb_cat(&res, "Ya has consultado mucho en esta pregunta. No uses más herramientas: responde con lo que tienes."); quiet = 1; }
             else {
                 show_steps(&st, tool->doing);
@@ -261,7 +263,7 @@ int agent_turn(int n, const int *roles, char *const *texts, const AgentUI *ui, A
                 tool->run(&c);
                 out->cost += c.cost;
                 if (!res.len) jb_cat(&res, "Hecho.");
-                if (!c.step[0]) snprintf(c.step, sizeof c.step, "%s", tool->doing);
+                if (!c.step[0]) snprintf(c.step, sizeof c.step, "%s", T(tool->doing));
                 unsigned long long h = fnv(res.s, fnv(args, fnv(call->name, 1469598103934665603ULL)));
                 int again = 0;
                 for (int j = 0; j < nseen; j++) if (seen[j] == h) again = 1;

@@ -74,6 +74,8 @@ static ibitmap *icon(const char *name, const unsigned char *data, int len)
 
 static const char *DIAS[] = { "domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado" };
 static const char *MESES[] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
+static const char *DAYS[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+static const char *MONTHS[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
 
 static char new_version[24];   /* versión nueva publicada, si la hay (ver «actualizaciones») */
 static void update_check(int force);
@@ -108,7 +110,7 @@ static void draw_home(void)
     struct tm tn;
     localtime_r(&now, &tn);
     char date[80];
-    snprintf(date, sizeof date, "%s, %d de %s", DIAS[tn.tm_wday], tn.tm_mday, MESES[tn.tm_mon]);
+    snprintf(date, sizeof date, T("%s, %d de %s"), (pockit_en() ? DAYS : DIAS)[tn.tm_wday], tn.tm_mday, (pockit_en() ? MONTHS : MESES)[tn.tm_mon]);
     SetFont(f_title, BLACK);
     DrawString(M, 44, "Pockit");
     SetFont(f_small, SOFT);
@@ -130,7 +132,7 @@ static void draw_home(void)
         } else FillArea(M, y, 170, 255, 0xE6E6E6);
         int tx = M + 200, tw = W - M - tx;
         SetFont(f_smallb, SOFT);
-        DrawString(tx, y, "LEYENDO AHORA");
+        DrawString(tx, y, T("LEYENDO AHORA"));
         SetFont(f_big, BLACK);
         DrawTextRect(tx, y + 40, tw, 120, r.title, ALIGN_LEFT | DOTS);
         SetFont(f_body, SOFT);
@@ -138,18 +140,18 @@ static void draw_home(void)
         DrawRect(tx, y + 214, tw, 14, BLACK);
         FillArea(tx, y + 214, (int)(tw * r.progress), 14, BLACK);
         char info[120];
-        snprintf(info, sizeof info, "%d %% · página %d de %d", (int)(r.progress * 100 + 0.5), r.page, r.pages);
+        snprintf(info, sizeof info, T("%d %% · página %d de %d"), (int)(r.progress * 100 + 0.5), r.page, r.pages);
         SetFont(f_small, SOFT);
         DrawString(tx, y + 240, info);
         y += 300;
         donde_y0 = y;
         FillArea(M, y, W - 2 * M, 90, BLACK);
         SetFont(f_bold, WHITE);
-        DrawTextRect(M, y, W - 2 * M, 90, "¿Dónde me quedé?  ›", ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(M, y, W - 2 * M, 90, T("¿Dónde me quedé?  ›"), ALIGN_CENTER | VALIGN_MIDDLE);
         y += 90;
     } else {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, y, W - 2 * M, 120, "No tienes ningún libro a medias. Abre uno y aquí verás tu progreso.", ALIGN_LEFT);
+        DrawTextRect(M, y, W - 2 * M, 120, T("No tienes ningún libro a medias. Abre uno y aquí verás tu progreso."), ALIGN_LEFT);
         donde_y0 = -1000;
         y += 130;
     }
@@ -160,16 +162,16 @@ static void draw_home(void)
     int act[7], wd = lectura_week(act), n = 0;
     for (int d = 0; d < 7; d++) n += act[d];
     char wk[80];
-    snprintf(wk, sizeof wk, "Esta semana · %d día%s leyendo", n, n == 1 ? "" : "s");
+    snprintf(wk, sizeof wk, T("Esta semana · %d día%s leyendo"), n, n == 1 ? "" : "s");
     SetFont(f_bold, BLACK);
     DrawString(M, y, wk);
     y += 60;
-    static const char *dn[] = { "L", "M", "X", "J", "V", "S", "D" };
+    static const char *dn[] = { "L", "M", "X", "J", "V", "S", "D" }, *dn_en[] = { "M", "T", "W", "T", "F", "S", "S" };
     int cw = (W - 2 * M) / 7;
     for (int d = 0; d < 7; d++) {
         int cx = M + d * cw + cw / 2;
         SetFont(d == wd ? f_smallb : f_small, d == wd ? BLACK : SOFT);
-        DrawTextRect(M + d * cw, y, cw, 34, dn[d], ALIGN_CENTER);
+        DrawTextRect(M + d * cw, y, cw, 34, (pockit_en() ? dn_en : dn)[d], ALIGN_CENTER);
         if (act[d]) FillArea(cx - 24, y + 42, 48, 48, BLACK);
         else DrawRect(cx - 24, y + 42, 48, 48, d > wd ? 0xE6E6E6 : LINE);
     }
@@ -184,7 +186,7 @@ static void draw_home(void)
         ibitmap *b = icon(TILES[i].name, TILES[i].icon, TILES[i].len);
         if (b) { DrawBitmap(x + (tw - b->width) / 2, ty + 18, b); free(b); }
         SetFont(f_body, BLACK);
-        DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? "Ajustes ·" : TILES[i].name, ALIGN_CENTER);
+        DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? T("Ajustes ·") : T(TILES[i].name), ALIGN_CENTER);
     }
     POCKIT_REFRESH(home_shown);
 }
@@ -206,10 +208,10 @@ static void home_sync_tick(void)
     if (cur != MOD_HOME || !nube_linked() || !(QueryNetwork() & NET_CONNECTED)) return;
     if (time(NULL) - sync_tried < 120 && !nube_pending()) return;   /* sin cambios aquí, como mucho cada 2 minutos */
     sync_tried = time(NULL);
-    sync_status("Sincronizando…");
+    sync_status(T("Sincronizando…"));
     char out[400];
     int ok = nube_sync(0, NULL, out, sizeof out);
-    sync_status(ok ? "Dropbox al día" : "Dropbox: no se pudo sincronizar");
+    sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 
 static void home_update_tick(void)
@@ -315,16 +317,16 @@ static void do_update(int button)
     if (button != 1) { draw_ajustes(); return; }
     char self[600], tmp[620], cmd[900];
     int hf = self_path(self, sizeof self) ? elf_hardfloat(self) : -1;
-    if (hf < 0) { Message(ICON_WARNING, "Pockit", "No se pudo saber dónde está instalado Pockit. Actualiza desde pockit.yous.dev.", 4000); return; }
+    if (hf < 0) { Message(ICON_WARNING, "Pockit", T("No se pudo saber dónde está instalado Pockit. Actualiza desde pockit.yous.dev."), 4000); return; }
     if (!(QueryNetwork() & NET_CONNECTED) && NetConnect2(NULL, true) != 0 && !(QueryNetwork() & NET_CONNECTED)) {
-        Message(ICON_WARNING, "Pockit", "No hay conexión. Activa la wifi y vuelve a intentarlo.", 3000);
+        Message(ICON_WARNING, "Pockit", T("No hay conexión. Activa la wifi y vuelve a intentarlo."), 3000);
         return;
     }
     int by = H / 2 - 80;   /* aviso mientras baja: un recuadro, sin esperar a que se cierre un mensaje */
     FillArea(M, by, W - 2 * M, 160, WHITE);
     for (int i = 0; i < 3; i++) DrawRect(M + i, by + i, W - 2 * M - 2 * i, 160 - 2 * i, BLACK);
     SetFont(f_body, BLACK);
-    DrawTextRect(M + 30, by, W - 2 * M - 60, 160, "Descargando la versión nueva…", ALIGN_CENTER | VALIGN_MIDDLE);
+    DrawTextRect(M + 30, by, W - 2 * M - 60, 160, T("Descargando la versión nueva…"), ALIGN_CENTER | VALIGN_MIDDLE);
     PartialUpdate(M, by, W - 2 * M, 160);
     snprintf(tmp, sizeof tmp, "%s.nuevo", self);
     snprintf(cmd, sizeof cmd, "curl -sfL -m 180 -o '%s' '" APPS_CDN "/%s/pockit.app'", tmp, hf ? "RK3566" : "B288");
@@ -333,14 +335,14 @@ static void do_update(int button)
     /* solo se cambia si lo descargado es un programa de la misma plataforma */
     if (st != 0 || stat(tmp, &sb) || sb.st_size < 100000 || elf_hardfloat(tmp) != hf) {
         remove(tmp);
-        Message(ICON_WARNING, "Pockit", "No se pudo descargar la actualización. Pockit sigue como estaba.", 4000);
+        Message(ICON_WARNING, "Pockit", T("No se pudo descargar la actualización. Pockit sigue como estaba."), 4000);
         return;
     }
     chmod(tmp, 0755);
-    if (rename(tmp, self)) { remove(tmp); Message(ICON_WARNING, "Pockit", "No se pudo instalar. Pockit sigue como estaba.", 4000); return; }
+    if (rename(tmp, self)) { remove(tmp); Message(ICON_WARNING, "Pockit", T("No se pudo instalar. Pockit sigue como estaba."), 4000); return; }
    
     static char msg[200];
-    snprintf(msg, sizeof msg, "Pockit %s instalado. Se cierra ahora: ábrelo otra vez para usar la versión nueva.", new_version);
+    snprintf(msg, sizeof msg, T("Pockit %s instalado. Se cierra ahora: ábrelo otra vez para usar la versión nueva."), new_version);
     Message(ICON_INFORMATION, "Pockit", msg, 3500);
     SetWeakTimer("pk_update", close_after_update, 3600);
 }
@@ -371,7 +373,7 @@ static void sync_progress(const char *msg)
 static void on_data(int button)
 {
     if (button == 1) {
-        sync_progress("Sincronizando con Dropbox…");
+        sync_progress(T("Sincronizando con Dropbox…"));
         char out[400];
         nube_sync(1, sync_progress, out, sizeof out);
         draw_ajustes();
@@ -380,7 +382,7 @@ static void on_data(int button)
     }
     if (button == 2) {
         nube_unlink();
-        Message(ICON_INFORMATION, "Dropbox", "Pockit ya no se sincroniza. Tus datos siguen en este lector y lo que hay en Dropbox se queda allí.", 4000);
+        Message(ICON_INFORMATION, "Dropbox", T("Pockit ya no se sincroniza. Tus datos siguen en este lector y lo que hay en Dropbox se queda allí."), 4000);
     }
     draw_ajustes();
 }
@@ -393,25 +395,25 @@ static void draw_ajustes(void)
     SetFont(f_head, BLACK);
     DrawString(M - 20, 42, "‹ Pockit");
     SetFont(f_title, BLACK);
-    DrawString(M, 110, "Ajustes");
+    DrawString(M, 110, T("Ajustes"));
     int y = 230;
     char line[300], dbx[600];
 
     /* dónde viven tus notas, chats y lo que Pockit sabe de tus libros */
     int linked = nube_linked();
     SetFont(f_smallb, SOFT);
-    DrawString(M, y, "TUS DATOS");
+    DrawString(M, y, T("TUS DATOS"));
     y += 50;
     data_y = y;
     SetFont(f_body, BLACK);
-    DrawString(M, y, linked ? "Sincronizar con Dropbox  ›" : "Solo en este lector");
+    DrawString(M, y, linked ? T("Sincronizar con Dropbox  ›") : T("Solo en este lector"));
     char last[400];
     if (linked) nube_last(last, sizeof last);
     SetFont(f_small, SOFT);
     DrawTextRect(M, y + 54, W - 2 * M, 150,
                  linked ? last
-                 : pockit_dropbox() ? "Tus datos están en la carpeta Dropbox PocketBook, pero la sincronización del lector no sabe sustituir archivos. Para sincronizarlos bien, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox»."
-                 : "Para tener tus notas, chats y libros también en el móvil, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox».",
+                 : pockit_dropbox() ? T("Tus datos están en la carpeta Dropbox PocketBook, pero la sincronización del lector no sabe sustituir archivos. Para sincronizarlos bien, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox».")
+                 : T("Para tener tus notas, chats y libros también en el móvil, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox»."),
                  ALIGN_LEFT);
     y += 220;
     DrawLine(M, y, W - M, y, LINE);
@@ -426,12 +428,12 @@ static void draw_ajustes(void)
     char a[32];
     ai_money(mon, a, sizeof a);
     SetFont(f_body, BLACK);
-    if (has) snprintf(line, sizeof line, "Activada · %s · %s este mes", AI_MODELS[ai_model].name, a);
-    else snprintf(line, sizeof line, "Sin activar");
+    if (has) snprintf(line, sizeof line, T("Activada · %s · %s este mes"), AI_MODELS[ai_model].name, a);
+    else snprintf(line, sizeof line, T("Sin activar"));
     DrawString(M, y, line);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 50, W - 2 * M, 80, has ? "Modelo, clave, gasto y errores: en Pockit AI → Uso y ajustes  ›"
-                                               : "Es opcional. Para activarla, pega una clave en pockit.yous.dev → Tu lector → Apps → IA.", ALIGN_LEFT);
+    DrawTextRect(M, y + 50, W - 2 * M, 80, has ? T("Modelo, clave, gasto y errores: en Pockit AI → Uso y ajustes  ›")
+                                               : T("Es opcional. Para activarla, pega una clave en pockit.yous.dev → Tu lector → Apps → IA."), ALIGN_LEFT);
     y += 160;
     DrawLine(M, y, W - M, y, LINE);
     y += 30;
@@ -441,10 +443,10 @@ static void draw_ajustes(void)
     y += 50;
     ver_y = y;
     SetFont(f_body, BLACK);
-    snprintf(line, sizeof line, "Versión %s", POCKIT_VERSION);
+    snprintf(line, sizeof line, T("Versión %s"), POCKIT_VERSION);
     DrawString(M, y, line);
     if (new_version[0]) {
-        snprintf(line, sizeof line, "Hay una versión nueva: %s. Toca para instalarla  ›", new_version);
+        snprintf(line, sizeof line, T("Hay una versión nueva: %s. Toca para instalarla  ›"), new_version);
         SetFont(f_bold, BLACK);
     } else if (update_checked) {
         char d[40];
@@ -452,13 +454,13 @@ static void draw_ajustes(void)
         time_t t = update_checked;
         localtime_r(&t, &tm);
         snprintf(d, sizeof d, "%d/%d %02d:%02d", tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min);
-        snprintf(line, sizeof line, "Al día (mirado el %s). Toca para mirar otra vez.", d);
+        snprintf(line, sizeof line, T("Al día (mirado el %s). Toca para mirar otra vez."), d);
         SetFont(f_small, SOFT);
-    } else { snprintf(line, sizeof line, "Toca para buscar actualizaciones."); SetFont(f_small, SOFT); }
+    } else { snprintf(line, sizeof line, T("Toca para buscar actualizaciones.")); SetFont(f_small, SOFT); }
     DrawTextRect(M, y + 50, W - 2 * M, 80, line, ALIGN_LEFT);
     y += 150;
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y, W - 2 * M, 120, "Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev", ALIGN_LEFT);
+    DrawTextRect(M, y, W - 2 * M, 120, T("Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev"), ALIGN_LEFT);
     POCKIT_REFRESH(aj_shown);
 }
 
@@ -471,17 +473,17 @@ static int ajustes_h(int type, int par1, int par2)
         int x = par1, y = par2;
         if (pockit_back_hit(x, y)) { pockit_home(); return 1; }
         if (y >= data_y - 10 && y < data_y + 200 && nube_linked()) {
-            Dialog3(ICON_QUESTION, "Dropbox", "Pockit sincroniza tus notas, chats y libros con la carpeta Pockit de tu Dropbox al abrirse y al cerrarse, si hay wifi.",
-                    "Sincronizar ahora", "Dejar de sincronizar", "Cancelar", on_data);
+            Dialog3(ICON_QUESTION, "Dropbox", T("Pockit sincroniza tus notas, chats y libros con la carpeta Pockit de tu Dropbox al abrirse y al cerrarse, si hay wifi."),
+                    T("Sincronizar ahora"), T("Dejar de sincronizar"), T("Cancelar"), on_data);
             return 1;
         }
         if (y >= ai_y - 10 && y < ai_y + 140 && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
         if (y >= ver_y - 10 && y < ver_y + 140) {
             if (new_version[0]) {
                 static char q[300];
-                snprintf(q, sizeof q, "¿Instalar Pockit %s? Se descarga (menos de 1 MB) y Pockit se cierra para abrir la versión nueva. Tus notas, chats y datos no se tocan.", new_version);
-                Dialog(ICON_QUESTION, "Actualizar Pockit", q, "Instalar", "Ahora no", do_update);
-            } else { update_check(1); draw_ajustes(); if (!new_version[0]) Message(ICON_INFORMATION, "Pockit", update_checked ? "Tienes la última versión." : "No se pudo mirar: comprueba la wifi.", 2000); }
+                snprintf(q, sizeof q, T("¿Instalar Pockit %s? Se descarga (menos de 1 MB) y Pockit se cierra para abrir la versión nueva. Tus notas, chats y datos no se tocan."), new_version);
+                Dialog(ICON_QUESTION, T("Actualizar Pockit"), q, T("Instalar"), T("Ahora no"), do_update);
+            } else { update_check(1); draw_ajustes(); if (!new_version[0]) Message(ICON_INFORMATION, "Pockit", update_checked ? T("Tienes la última versión.") : T("No se pudo mirar: comprueba la wifi."), 2000); }
         }
         return 1;
     }

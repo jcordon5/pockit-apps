@@ -92,7 +92,9 @@ static char kbd[LINE_MAX];
 static int editing = -1;    /* línea que se está editando; nlines = nueva al final */
 static int new_kind;        /* 0 texto, 1 tarea */
 
-static const char *MESES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+static const char *MESES_ES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+static const char *MESES_EN[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+#define MESES (pockit_en() ? MESES_EN : MESES_ES)
 
 /* ---------- utilidades ---------- */
 static void trim_nl(char *s) { size_t n = strlen(s); while (n && (s[n - 1] == '\n' || s[n - 1] == '\r')) s[--n] = 0; }
@@ -186,7 +188,7 @@ static void scan_notes(void)
         if (f) fclose(f);
         size_t tl = strlen(n->tags);
         if (tl) n->tags[tl - 1] = 0;
-        if (!n->title[0]) snprintf(n->title, sizeof n->title, "Nota nueva");
+        if (!n->title[0]) snprintf(n->title, sizeof n->title, T("Nota nueva"));
         nall++;
     }
     closedir(d);
@@ -433,7 +435,7 @@ static void draw_toolbar(const char **labels, int n)
     DrawLine(0, y, W, y, BLACK);
     SetFont(f_head, BLACK);
     for (int i = 0; i < n; i++)
-        DrawTextRect(i * W / n, y, W / n, TOOLBAR, labels[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(i * W / n, y, W / n, TOOLBAR, T(labels[i]), ALIGN_CENTER | VALIGN_MIDDLE);
 }
 
 /* ---------- teclado propio ---------- */
@@ -456,12 +458,12 @@ static int kb_row(int r, Key *out)
     if (r == 3) {
         out[n++] = (Key){ kb_layer ? "ABC" : "123", kb_layer ? K_ABC : K_SYM, 1.5f };
         out[n++] = (Key){ ",", K_CHAR, 1 };
-        out[n++] = (Key){ "espacio", K_SPACE, 5 };
+        out[n++] = (Key){ pockit_en() ? "space" : "espacio", K_SPACE, 5 };
         out[n++] = (Key){ ".", K_CHAR, 1 };
-        out[n++] = (Key){ "intro", K_ENTER, 1.5f };
+        out[n++] = (Key){ pockit_en() ? "enter" : "intro", K_ENTER, 1.5f };
         return n;
     }
-    if (r == 2) out[n++] = kb_layer ? (Key){ "´", K_ACUTE, 1.5f } : (Key){ "mayús", K_SHIFT, 1.5f };
+    if (r == 2) out[n++] = kb_layer ? (Key){ "´", K_ACUTE, 1.5f } : (Key){ T("mayús"), K_SHIFT, 1.5f };
     if (kb_layer) {
         for (int c = 0; c < 10 && ROWS_SYM[r][c]; c++) out[n++] = (Key){ ROWS_SYM[r][c], K_CHAR, 1 };
     } else {
@@ -478,7 +480,7 @@ static int kb_row(int r, Key *out)
             c++;
         }
     }
-    if (r == 2) out[n++] = (Key){ "borrar", K_BACK, 1.5f };
+    if (r == 2) out[n++] = (Key){ pockit_en() ? "delete" : "borrar", K_BACK, 1.5f };
     return n;
 }
 
@@ -537,7 +539,7 @@ static void draw_format_bar(void)
     int bw = W / NFMT;
     for (int i = 0; i < NFMT; i++) {
         SetFont(i == NFMT - 1 ? f_smallb : i == 2 ? f_head : f_small, BLACK);
-        DrawTextRect(i * bw, y, bw, FMT_H, FMT[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(i * bw, y, bw, FMT_H, T(FMT[i]), ALIGN_CENTER | VALIGN_MIDDLE);
     }
 }
 
@@ -561,10 +563,10 @@ static void draw_note(void)
     int pages = (total_rows + rows_on_page() - 1) / rows_on_page();
     if (pages > 1 && !editing_mode) {
         char pg[64];
-        snprintf(pg, sizeof pg, "%s · pág. %d de %d", ds, scroll_row / rows_on_page() + 1, pages);
+        snprintf(pg, sizeof pg, T("%s · pág. %d de %d"), ds, scroll_row / rows_on_page() + 1, pages);
         snprintf(ds, sizeof ds, "%s", pg);
     }
-    draw_top_bar("‹ Notas", ds, editing_mode ? "Listo" : NULL);
+    draw_top_bar(T("‹ Notas"), ds, editing_mode ? T("Listo") : NULL);
     draw_doc();
     if (editing_mode) { draw_format_bar(); draw_keyboard(); }
     else draw_toolbar(NOTE_TOOLS, 4);
@@ -869,18 +871,18 @@ static int layout_chips(int draw)
     if (fi >= 0) order[no++] = fi;   /* la elegida, siempre a la vista */
     for (int i = 0; i < ntagc; i++) if (i != fi) order[no++] = i;
     SetFont(f_small, BLACK);
-    int more_w = StringWidth("Más  ›") + 44, x = M, y = CHIPS_Y, row = 0;
+    int more_w = StringWidth(T("Más  ›")) + 44, x = M, y = CHIPS_Y, row = 0;
     for (int k = 0; k < no && nchips < 23; k++) {
         char label[60];
         int kind = order[k];
-        if (kind < 0) snprintf(label, sizeof label, "Todas");
+        if (kind < 0) snprintf(label, sizeof label, T("Todas"));
         else snprintf(label, sizeof label, "#%s", tagc[kind].tag);
         int w = StringWidth(label) + 44;
         if (w > W - 2 * M - more_w - 16) w = W - 2 * M - more_w - 16;
         int rest = k < no - 1;
         if (x + w > W - M || (row == 1 && rest && x + w + 16 + more_w > W - M)) {
             if (row == 0 && x + w > W - M) { row = 1; x = M; y += CHIP_H + 14; k--; continue; }
-            snprintf(label, sizeof label, "Más  ›");
+            snprintf(label, sizeof label, T("Más  ›"));
             kind = -2;
             w = more_w;
             k = no;
@@ -903,17 +905,17 @@ static void draw_list(void)
     ClearScreen();
     pockit_back();
     SetFont(f_title, BLACK);
-    DrawString(M, 110, "Notas");
+    DrawString(M, 110, T("Notas"));
     DrawTextRect(W - M - 140, 90, 140, 100, "+", ALIGN_RIGHT | VALIGN_MIDDLE);
     char cnt[120];
-    snprintf(cnt, sizeof cnt, "%d nota%s%s%s", nnotes, nnotes == 1 ? "" : "s", filter[0] ? " con #" : "", filter);
+    snprintf(cnt, sizeof cnt, T("%d nota%s%s%s"), nnotes, nnotes == 1 ? "" : "s", filter[0] ? T(" con #") : "", filter);
     SetFont(f_small, SOFT);
     DrawString(M, 186, cnt);
     list_top = layout_chips(1);
     DrawLine(M, list_top - 16, W - M, list_top - 16, PAPER_LINE);
     if (!nnotes) {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, list_top + 160, W - 2 * M, 200, "Toca + para crear tu primera nota.\n\nEscribe #algo en una nota para etiquetarla.", ALIGN_CENTER);
+        DrawTextRect(M, list_top + 160, W - 2 * M, 200, T("Toca + para crear tu primera nota.\n\nEscribe #algo en una nota para etiquetarla."), ALIGN_CENTER);
     }
     for (int k = 0; k < list_rows() && list_scroll + k < nnotes; k++) {
         NoteInfo *n = &notes[list_scroll + k];
@@ -926,7 +928,7 @@ static void draw_list(void)
         int dw = StringWidth(ds);
         DrawString(M, y + 72, ds);
         if (n->tags[0]) snprintf(sub, sizeof sub, "%s  ·  %s", n->tags, n->preview[0] ? n->preview : "");
-        else snprintf(sub, sizeof sub, "%s", n->preview[0] ? n->preview : "Sin más texto");
+        else snprintf(sub, sizeof sub, "%s", n->preview[0] ? n->preview : T("Sin más texto"));
         DrawTextRect(M + dw + 24, y + 72, W - 2 * M - dw - 24, 44, sub, ALIGN_LEFT | DOTS);
         DrawLine(M, y + ROW_H - 10, W - M, y + ROW_H - 10, PAPER_LINE);
     }
@@ -949,15 +951,15 @@ static void draw_tags(void)
 {
     ClearScreen();
     SetFont(f_head, BLACK);
-    DrawString(M - 20, 42, "‹ Notas");
+    DrawString(M - 20, 42, T("‹ Notas"));
     SetFont(f_title, BLACK);
-    DrawString(M, 110, "Etiquetas");
+    DrawString(M, 110, T("Etiquetas"));
     for (int k = 0; k < tags_rows() && tags_scroll + k < ntagc; k++) {
         TagCount *t = &tagc[tags_scroll + k];
         int y = TAGS_TOP + k * TAG_ROW;
         char l[60], n[32];
         snprintf(l, sizeof l, "#%s", t->tag);
-        snprintf(n, sizeof n, t->n == 1 ? "1 nota" : "%d notas", t->n);
+        snprintf(n, sizeof n, t->n == 1 ? T("1 nota") : T("%d notas"), t->n);
         SetFont(!strcmp(t->tag, filter) ? f_bold : f_body, BLACK);
         DrawTextRect(M, y, W - 2 * M - 200, TAG_ROW - 10, l, ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
         SetFont(f_small, SOFT);
@@ -1038,7 +1040,7 @@ static void note_tap(int x, int y)
     }
     if (y > H - TOOLBAR) {
         int b = x * 4 / W;
-        if (b == 3) { Dialog(ICON_QUESTION, "Borrar nota", "¿Borrar esta nota? No se puede deshacer.", "Borrar", "Cancelar", confirm_delete); return; }
+        if (b == 3) { Dialog(ICON_QUESTION, T("Borrar nota"), T("¿Borrar esta nota? No se puede deshacer."), T("Borrar"), T("Cancelar"), confirm_delete); return; }
         /* escribir al final; tarea o punto nuevos al final */
         int last = nlines - 1;
         if (b == 0) { if (nlines == 0 || lines[last][0]) insert_line(nlines, ""); start_editing(nlines - 1, strlen(lines[nlines - 1])); return; }

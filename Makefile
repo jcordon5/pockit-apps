@@ -6,7 +6,7 @@
 POCKIT_SRC  := $(wildcard apps/pockit/*.c)
 INKVIEW     := vendor/libinkview
 INKVIEW_REF := 5206688e8e4f70304629304bddeca32e306f0967
-CFLAGS      := -O2 -Wall -Wno-unused-parameter -Wno-deprecated-declarations -Wno-unused-result \
+CFLAGS      := -O2 -Wall -Wno-unused-parameter -Wno-deprecated-declarations -Wno-unused-result -Wno-format-security \
                -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -fsigned-char -std=gnu11 -s
 
 

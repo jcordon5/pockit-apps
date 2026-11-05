@@ -224,20 +224,22 @@ static void strip_html(char *s)
 static char vstate[MAX_MARKS];   /* por marca: 0 por aprender, 'a' aprendida, 'q' quitada (ver «vocabulario») */
 static void export_marks(void)
 {
-    static const char *MES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+    static const char *MES_ES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+    static const char *MES_EN[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const char **MES = pockit_en() ? MES_EN : MES_ES;
     for (int b = 0; b < nbooks; b++) {
         Book *bk = &books[b];
         if (!bk->marks && !bk->words) continue;
         JBuf md = { 0 };
         char line[600];
-        snprintf(line, sizeof line, "# Subrayados de «%s»\n", bk->title);
+        snprintf(line, sizeof line, T("# Subrayados de «%s»\n"), bk->title);
         jb_cat(&md, line);
         for (int pass = 0; pass < 2; pass++) {
             int first = 1;
             for (int i = nmarks - 1; i >= 0; i--) {   /* del más viejo al más nuevo: el orden de lectura */
                 Mark *m = &marks[i];
                 if (m->word != pass || strcmp(m->book, bk->title) || (pass && vstate[i] == 'q')) continue;
-                if (first && pass) jb_cat(&md, "\n## Palabras\n");
+                if (first && pass) jb_cat(&md, T("\n## Palabras\n"));
                 first = 0;
                 struct tm tm;
                 time_t t = m->ts;
@@ -249,7 +251,7 @@ static void export_marks(void)
                     snprintf(line, sizeof line, "\n\n*%d %s %d*\n", tm.tm_mday, MES[tm.tm_mon], tm.tm_year + 1900);
                     jb_cat(&md, line);
                 } else {
-                    snprintf(line, sizeof line, "\n- **%s**%s: ", m->text, vstate[i] == 'a' ? " (aprendida)" : "");
+                    snprintf(line, sizeof line, "\n- **%s**%s: ", m->text, vstate[i] == 'a' ? T(" (aprendida)") : "");
                     jb_cat(&md, line);
                     char def[300];
                     snprintf(def, sizeof def, "%.250s", m->note ? m->note : "");
@@ -281,9 +283,9 @@ static void load_data(void)
 {
     if (data_loaded) return;
     data_loaded = 1;
-    if (!load_sqlite()) { snprintf(error_msg, sizeof error_msg, "No se encuentra SQLite en el lector."); return; }
+    if (!load_sqlite()) { snprintf(error_msg, sizeof error_msg, T("No se encuentra SQLite en el lector.")); return; }
     sqlite3 *lib = NULL, *meta = NULL;
-    if (db_open(EXPLORER, &lib, SQLITE_OPEN_READONLY, NULL)) { snprintf(error_msg, sizeof error_msg, "No se puede abrir la biblioteca."); return; }
+    if (db_open(EXPLORER, &lib, SQLITE_OPEN_READONLY, NULL)) { snprintf(error_msg, sizeof error_msg, T("No se puede abrir la biblioteca.")); return; }
     sqlite3_stmt *st;
     const char *q =
         "select b.title, b.author, f.filename, fo.name, b.ts_added, s.cpage, s.npage, s.opentime, s.completed, s.completed_ts, s.position "
@@ -432,18 +434,20 @@ static int vcards;                         /* 0 lista de palabras, 1 tarjetas */
 
 static void refresh(void) { POCKIT_REFRESH(shown_once); }
 
-static const char *MESES[] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
+static const char *MESES_ES[] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
+static const char *MESES_EN[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+#define MESES (pockit_en() ? MESES_EN : MESES_ES)
 
 static void ago(long t, char *out, size_t n)
 {
-    if (!t) { snprintf(out, n, "sin abrir"); return; }
+    if (!t) { snprintf(out, n, T("sin abrir")); return; }
     long d = (day_start(time(NULL)) - day_start(t)) / 86400;
-    if (d <= 0) snprintf(out, n, "hoy");
-    else if (d == 1) snprintf(out, n, "ayer");
-    else if (d < 30) snprintf(out, n, "hace %ld días", d);
-    else if (d < 60) snprintf(out, n, "hace un mes");
-    else if (d < 365) snprintf(out, n, "hace %ld meses", d / 30);
-    else snprintf(out, n, "hace más de un año");
+    if (d <= 0) snprintf(out, n, T("hoy"));
+    else if (d == 1) snprintf(out, n, T("ayer"));
+    else if (d < 30) snprintf(out, n, T("hace %ld días"), d);
+    else if (d < 60) snprintf(out, n, T("hace un mes"));
+    else if (d < 365) snprintf(out, n, T("hace %ld meses"), d / 30);
+    else snprintf(out, n, T("hace más de un año"));
 }
 
 static void fecha(long t, char *out, size_t n)
@@ -451,7 +455,7 @@ static void fecha(long t, char *out, size_t n)
     struct tm tm;
     time_t x = t;
     localtime_r(&x, &tm);
-    snprintf(out, n, "%d de %s de %d", tm.tm_mday, MESES[tm.tm_mon], tm.tm_year + 1900);
+    snprintf(out, n, T("%d de %s de %d"), tm.tm_mday, MESES[tm.tm_mon], tm.tm_year + 1900);
 }
 
 static void bar(int x, int y, int w, int h, double p)
@@ -489,7 +493,7 @@ static void draw_tabs(void)
     for (int i = 0; i < NTABS; i++) {
         int on = i == (int)tab;
         SetFont(on ? f_tabb : f_tab, on ? BLACK : SOFT);
-        DrawTextRect(i * tw, y, tw, TABS_H, names[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(i * tw, y, tw, TABS_H, T(names[i]), ALIGN_CENTER | VALIGN_MIDDLE);
         if (on) FillArea(i * tw + 30, y + TABS_H - 14, tw - 60, 6, BLACK);
     }
 }
@@ -514,13 +518,13 @@ static void pager(int page, int pages)
     int y = pager_y();
     DrawLine(M, y, W - M, y, LINE);
     char mid[40];
-    snprintf(mid, sizeof mid, "%d de %d", page + 1, pages);
+    snprintf(mid, sizeof mid, T("%d de %d"), page + 1, pages);
     SetFont(f_small, SOFT);
     DrawTextRect(0, y, W, PAGER_H, mid, ALIGN_CENTER | VALIGN_MIDDLE);
     SetFont(f_head, page > 0 ? BLACK : LINE);
-    DrawTextRect(M, y, W / 3, PAGER_H, "‹ Anterior", ALIGN_LEFT | VALIGN_MIDDLE);
+    DrawTextRect(M, y, W / 3, PAGER_H, T("‹ Anterior"), ALIGN_LEFT | VALIGN_MIDDLE);
     SetFont(f_head, page + 1 < pages ? BLACK : LINE);
-    DrawTextRect(W - M - W / 3, y, W / 3, PAGER_H, "Siguiente ›", ALIGN_RIGHT | VALIGN_MIDDLE);
+    DrawTextRect(W - M - W / 3, y, W / 3, PAGER_H, T("Siguiente ›"), ALIGN_RIGHT | VALIGN_MIDDLE);
 }
 
 /* ---------- Resumen ---------- */
@@ -551,7 +555,7 @@ static void reading_item(const Book *b, int y)
     bar(tx, y + 112, tw, 14, b->progress);
     char info[120], when[40];
     ago(b->opened, when, sizeof when);
-    snprintf(info, sizeof info, "%d %%  ·  página %d de %d  ·  %s", (int)(b->progress * 100 + 0.5), b->page, b->pages, when);
+    snprintf(info, sizeof info, T("%d %%  ·  página %d de %d  ·  %s"), (int)(b->progress * 100 + 0.5), b->page, b->pages, when);
     SetFont(f_small, SOFT);
     DrawString(tx, y + 140, info);
 }
@@ -574,19 +578,19 @@ static void draw_resumen(void)
     }
     char sub[120], a[40];
     ago(last, a, sizeof a);
-    snprintf(sub, sizeof sub, "Última lectura: %s", a);
-    header("Tu lectura", sub);
+    snprintf(sub, sizeof sub, T("Última lectura: %s"), a);
+    header(T("Tu lectura"), sub);
 
     int y = TOP + 10, bw = (W - 2 * M) / 4;
-    stat_box(M, bw, y, nbooks, "libros");
-    stat_box(M + bw, bw, y, reading, "a medias");
-    stat_box(M + 2 * bw, bw, y, done, "terminados");
-    stat_box(M + 3 * bw, bw, y, pages, "páginas leídas");
+    stat_box(M, bw, y, nbooks, T("libros"));
+    stat_box(M + bw, bw, y, reading, T("a medias"));
+    stat_box(M + 2 * bw, bw, y, done, T("terminados"));
+    stat_box(M + 3 * bw, bw, y, pages, T("páginas leídas"));
     DrawLine(M, y + 150, W - M, y + 150, LINE);
 
     y += 180;
     SetFont(f_bold, BLACK);
-    DrawString(M, y, "Leyendo ahora");
+    DrawString(M, y, T("Leyendo ahora"));
     y += 64;
     nreading = 0;
     reading_y0 = y;
@@ -597,15 +601,16 @@ static void draw_resumen(void)
         reading_idx[nreading++] = i;
         y += 210;
     }
-    if (!nreading) { SetFont(f_body, SOFT); DrawString(M, y, "Ningún libro a medias."); y += 70; }
+    if (!nreading) { SetFont(f_body, SOFT); DrawString(M, y, T("Ningún libro a medias.")); y += 70; }
     DrawLine(M, y, W - M, y, LINE);
 
     /* Esta semana, de lunes a domingo */
     y += 30;
     SetFont(f_bold, BLACK);
-    DrawString(M, y, "Esta semana");
+    DrawString(M, y, T("Esta semana"));
     y += 70;
-    static const char *dn[] = { "L", "M", "X", "J", "V", "S", "D" };
+    static const char *dn_es[] = { "L", "M", "X", "J", "V", "S", "D" }, *dn_en[] = { "M", "T", "W", "T", "F", "S", "S" };
+    const char **dn = pockit_en() ? dn_en : dn_es;
     long today = day_start(now);
     int wd = (tn.tm_wday + 6) % 7, cw = (W - 2 * M) / 7, n_active = 0;
     for (int d = 0; d < 7; d++) {
@@ -619,7 +624,7 @@ static void draw_resumen(void)
     }
     y += 120;
     char line[200];
-    snprintf(line, sizeof line, "%d terminado%s este año  ·  %d subrayado%s  ·  %d palabra%s",
+    snprintf(line, sizeof line, T("%d terminado%s este año  ·  %d subrayado%s  ·  %d palabra%s"),
              year_done, year_done == 1 ? "" : "s", nmarks - nwords, nmarks - nwords == 1 ? "" : "s", nwords, nwords == 1 ? "" : "s");
     SetFont(f_small, SOFT);
     DrawTextRect(M, y, W - 2 * M, 44, line, ALIGN_CENTER);
@@ -634,13 +639,14 @@ static void draw_actividad(void)
     char t[60];
     snprintf(t, sizeof t, "%s %d", MESES[cal_month], cal_year);
     t[0] -= t[0] >= 'a' && t[0] <= 'z' ? 32 : 0;
-    header("Actividad", "Días con lectura registrada en el lector");
+    header(T("Actividad"), T("Días con lectura registrada en el lector"));
     SetFont(f_head, BLACK);
     DrawTextRect(M, TOP - 10, W - 2 * M, 70, t, ALIGN_CENTER | VALIGN_MIDDLE);
     DrawTextRect(M, TOP - 10, 120, 70, "‹", ALIGN_LEFT | VALIGN_MIDDLE);
     DrawTextRect(W - M - 120, TOP - 10, 120, 70, "›", ALIGN_RIGHT | VALIGN_MIDDLE);
 
-    static const char *dn[] = { "L", "M", "X", "J", "V", "S", "D" };
+    static const char *dn_es[] = { "L", "M", "X", "J", "V", "S", "D" }, *dn_en[] = { "M", "T", "W", "T", "F", "S", "S" };
+    const char **dn = pockit_en() ? dn_en : dn_es;
     int cw = (W - 2 * M) / 7, ch = cal_cell_h(), y0 = cal_top();
     SetFont(f_small, SOFT);
     for (int d = 0; d < 7; d++) DrawTextRect(M + d * cw, y0 - 44, cw, 40, dn[d], ALIGN_CENTER);
@@ -670,13 +676,13 @@ static void draw_actividad(void)
     y += 24;
     char line[200];
     if (!cal_day) {
-        snprintf(line, sizeof line, "%d día%s con lectura en %s. Toca un día para ver qué pasó.", read_days, read_days == 1 ? "" : "s", MESES[cal_month]);
+        snprintf(line, sizeof line, T("%d día%s con lectura en %s. Toca un día para ver qué pasó."), read_days, read_days == 1 ? "" : "s", MESES[cal_month]);
         SetFont(f_body, SOFT);
         DrawTextRect(M, y, W - 2 * M, 120, line, ALIGN_LEFT);
         return;
     }
     struct tm x2 = first; x2.tm_mday = cal_day; x2.tm_hour = 0; time_t d0 = mktime(&x2);
-    snprintf(line, sizeof line, "%d de %s", cal_day, MESES[cal_month]);
+    snprintf(line, sizeof line, T("%d de %s"), cal_day, MESES[cal_month]);
     SetFont(f_bold, BLACK);
     DrawString(M, y, line);
     y += 60;
@@ -690,14 +696,14 @@ static void draw_actividad(void)
             if (dup) continue;
             int count = 0;
             for (int j = 0; j < nevents; j++) if (events[j].kind == k && events[j].ts >= d0 && events[j].ts < d0 + 86400 && !strcmp(events[j].book, events[i].book)) count++;
-            if (k >= 2 && count > 1) snprintf(line, sizeof line, "%s «%s» (%d veces)", what[k], events[i].book, count);
-            else snprintf(line, sizeof line, "%s «%s»", what[k], events[i].book);
+            if (k >= 2 && count > 1) snprintf(line, sizeof line, T("%s «%s» (%d veces)"), T(what[k]), events[i].book, count);
+            else snprintf(line, sizeof line, T("%s «%s»"), T(what[k]), events[i].book);
             SetFont(f_body, BLACK);
             DrawTextRect(M, y, W - 2 * M, 44, line, ALIGN_LEFT | DOTS);
             y += 52;
             shown++;
         }
-    if (!shown) { SetFont(f_body, SOFT); DrawString(M, y, "Sin actividad registrada."); }
+    if (!shown) { SetFont(f_body, SOFT); DrawString(M, y, T("Sin actividad registrada.")); }
 }
 
 /* ---------- Libros ---------- */
@@ -707,8 +713,8 @@ static int libros_rows(void) { return (H - TABS_H - PAGER_H - TOP) / BOOK_ROW; }
 static void draw_libros(void)
 {
     char sub[80];
-    snprintf(sub, sizeof sub, "%d libros, del último abierto al primero. Toca uno para verlo.", nbooks);
-    header("Libros", sub);
+    snprintf(sub, sizeof sub, T("%d libros, del último abierto al primero. Toca uno para verlo."), nbooks);
+    header(T("Libros"), sub);
     int per = libros_rows(), from = page_of[LIBROS] * per;
     int y = TOP;
     for (int i = from; i < nbooks && i < from + per; i++, y += BOOK_ROW) {
@@ -721,12 +727,12 @@ static void draw_libros(void)
         DrawTextRect(tx, y + 50, tw, 40, b->author[0] ? b->author : " ", ALIGN_LEFT | DOTS);
         char info[160], when[40];
         ago(b->opened, when, sizeof when);
-        if (b->gone) snprintf(info, sizeof info, "Ya no está en el lector");
-        else if (b->done) snprintf(info, sizeof info, "Terminado  ·  %s", when);
+        if (b->gone) snprintf(info, sizeof info, T("Ya no está en el lector"));
+        else if (b->done) snprintf(info, sizeof info, T("Terminado  ·  %s"), when);
         else if (b->progress > 0) snprintf(info, sizeof info, "%d %%  ·  %s", (int)(b->progress * 100 + 0.5), when);
-        else snprintf(info, sizeof info, "Sin empezar");
-        if (b->marks) { char m[40]; snprintf(m, sizeof m, "  ·  %d subrayado%s", b->marks, b->marks == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
-        if (b->words) { char m[40]; snprintf(m, sizeof m, "  ·  %d palabra%s", b->words, b->words == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
+        else snprintf(info, sizeof info, T("Sin empezar"));
+        if (b->marks) { char m[40]; snprintf(m, sizeof m, T("  ·  %d subrayado%s"), b->marks, b->marks == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
+        if (b->words) { char m[40]; snprintf(m, sizeof m, T("  ·  %d palabra%s"), b->words, b->words == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
         if (b->progress > 0) bar(tx, y + 104, tw, 10, b->done ? 1 : b->progress);
         DrawString(tx, y + 126, info);
         DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
@@ -788,11 +794,11 @@ static int draw_mark_list(int words, const char *book, int target, int first_y0,
 static void draw_subrayados(void)
 {
     char sub[80];
-    snprintf(sub, sizeof sub, "%d subrayados, del más reciente", nmarks - nwords);
-    header("Subrayados", sub);
+    snprintf(sub, sizeof sub, T("%d subrayados, del más reciente"), nmarks - nwords);
+    header(T("Subrayados"), sub);
     if (nmarks - nwords == 0) {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, 400, W - 2 * M, 300, "Aún no has subrayado nada.", ALIGN_CENTER);
+        DrawTextRect(M, 400, W - 2 * M, 300, T("Aún no has subrayado nada."), ALIGN_CENTER);
         last_page_end = 1;
         return;
     }
@@ -841,21 +847,21 @@ static void draw_palabras(void)
 {
     build_vocab();
     char sub[120];
-    snprintf(sub, sizeof sub, "%d por aprender  ·  %d aprendida%s", npending, nlearned, nlearned == 1 ? "" : "s");
-    if (vcards) { SetFont(f_head, BLACK); DrawString(M - 20, 42, "‹ Lista"); SetFont(f_small, SOFT); DrawString(M, 186, sub); }
-    else header("Palabras", sub);
+    snprintf(sub, sizeof sub, T("%d por aprender  ·  %d aprendida%s"), npending, nlearned, nlearned == 1 ? "" : "s");
+    if (vcards) { SetFont(f_head, BLACK); DrawString(M - 20, 42, T("‹ Lista")); SetFont(f_small, SOFT); DrawString(M, 186, sub); }
+    else header(T("Palabras"), sub);
     /* filtro */
     static const char *fl[] = { "Por aprender", "Aprendidas" };
     for (int i = 0; i < 2; i++) {
         int x = W - M - 2 * 230 + i * 230, on = i == vfilter;
         if (on) FillArea(x, 40, 220, 64, BLACK); else DrawRect(x, 40, 220, 64, LINE);
         SetFont(f_small, on ? WHITE : BLACK);
-        DrawTextRect(x, 40, 220, 64, fl[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(x, 40, 220, 64, T(fl[i]), ALIGN_CENTER | VALIGN_MIDDLE);
     }
     if (!nvocab) {
         SetFont(f_body, SOFT);
-        DrawTextRect(M, 450, W - 2 * M, 400, vfilter ? "Aún no has marcado ninguna como aprendida." :
-                     nwords ? "¡Las has aprendido todas!" : "Busca una palabra en el diccionario mientras lees y pulsa «Guardar en notas».", ALIGN_CENTER);
+        DrawTextRect(M, 450, W - 2 * M, 400, vfilter ? T("Aún no has marcado ninguna como aprendida.") :
+                     nwords ? T("¡Las has aprendido todas!") : T("Busca una palabra en el diccionario mientras lees y pulsa «Guardar en notas»."), ALIGN_CENTER);
         last_page_end = 1;
         return;
     }
@@ -895,14 +901,14 @@ static void draw_palabras(void)
         }
         SetFont(f_small, SOFT);
         DrawTextRect(x0 + 50, y1 - 150, iw, 40, m->book, ALIGN_CENTER | DOTS);
-        DrawTextRect(x0 + 50, y1 - 90, iw, 40, "Toca la tarjeta para ver el significado", ALIGN_CENTER);
+        DrawTextRect(x0 + 50, y1 - 90, iw, 40, T("Toca la tarjeta para ver el significado"), ALIGN_CENTER);
     } else {
         SetFont(f_title, BLACK);
         DrawTextRect(x0 + 50, y0 + 60, iw, 80, m->text, ALIGN_LEFT | VALIGN_MIDDLE);
         static char def[1600];
         format_definition(m->note ? m->note : "", def, sizeof def);
         SetFont(f_body, BLACK);
-        DrawTextRect(x0 + 50, y0 + 170, iw, y1 - y0 - 230, def[0] ? def : "Sin definición guardada.", ALIGN_LEFT | DOTS);
+        DrawTextRect(x0 + 50, y0 + 170, iw, y1 - y0 - 230, def[0] ? def : T("Sin definición guardada."), ALIGN_LEFT | DOTS);
     }
     /* acciones */
     int by = y1 + 40, bw = (W - 2 * M - 3 * 20) / 4;
@@ -913,7 +919,7 @@ static void draw_palabras(void)
         DrawRect(x, by, bw, 100, dis ? LINE : BLACK);
         DrawRect(x + 1, by + 1, bw - 2, 98, dis ? LINE : BLACK);
         SetFont(i == 0 || i == 3 ? f_title : f_body, dis ? LINE : BLACK);
-        DrawTextRect(x, by, bw, 100, labels[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(x, by, bw, 100, T(labels[i]), ALIGN_CENTER | VALIGN_MIDDLE);
     }
     last_page_end = 1;
 }
@@ -983,7 +989,7 @@ static void ensure_book(void)
     readpos = 0;
     Book *b = &books[detail];
     if (b->gone || !is_epub(b->path)) { eb_state = -1; return; }
-    busy("Preparando el libro…");
+    busy(T("Preparando el libro…"));
     eb_state = ep_load(&eb, b->path);
     if (eb_state == 0) {
         pockit_book_adopt(b->title, eb.dir);
@@ -1058,13 +1064,13 @@ static void draw_donde(int y)
         if (eb_state == 0) {
             int ci = ep_chapter_at(&eb, readpos);
             char line[400];
-            if (eb.ch[ci].title[0] && strlen(eb.ch[ci].title) < 70) snprintf(line, sizeof line, "Vas por «%s» · %d %% del libro", eb.ch[ci].title, (int)(100.0 * readpos / (eb.len ? eb.len : 1) + 0.5));
-            else snprintf(line, sizeof line, "Llevas el %d %% del libro", (int)(100.0 * readpos / (eb.len ? eb.len : 1) + 0.5));
+            if (eb.ch[ci].title[0] && strlen(eb.ch[ci].title) < 70) snprintf(line, sizeof line, T("Vas por «%s» · %d %% del libro"), eb.ch[ci].title, (int)(100.0 * readpos / (eb.len ? eb.len : 1) + 0.5));
+            else snprintf(line, sizeof line, T("Llevas el %d %% del libro"), (int)(100.0 * readpos / (eb.len ? eb.len : 1) + 0.5));
             SetFont(f_small, SOFT);
             DrawTextRect(M, y, W - 2 * M, 40, line, ALIGN_LEFT | DOTS);
             y += 50;
             SetFont(f_bold, BLACK);
-            DrawString(M, y, "Lo último que leíste");
+            DrawString(M, y, T("Lo último que leíste"));
             y += 56;
             long s = readpos > 520 ? readpos - 520 : 0;
             while (s > 0 && eb.text[s - 1] != '\n' && readpos - s < 900) s--;
@@ -1075,20 +1081,20 @@ static void draw_donde(int y)
             int h = TextRectHeight(W - 2 * M - 30, last, 0);
             if (h > 300) h = 300;
             FillArea(M, y, 6, h, SOFT);
-            DrawTextRect(M + 30, y, W - 2 * M - 30, h, last[0] ? last : "Aún no has empezado.", ALIGN_LEFT | DOTS);
+            DrawTextRect(M + 30, y, W - 2 * M - 30, h, last[0] ? last : T("Aún no has empezado."), ALIGN_LEFT | DOTS);
             y += h + 40;
         } else {
-            y = hint_box(y, b->gone ? "Este libro ya no está en el lector. Pockit conserva lo que guardó de él, tus subrayados y tus notas."
-                          : eb_state == 1 ? "Este libro tiene DRM (por ejemplo, un préstamo de la biblioteca): su texto está cifrado y no se puede leer."
-                                          : "«Dónde voy» y «Personajes» leen el texto de los libros en ePub, y este está en otro formato.");
+            y = hint_box(y, b->gone ? T("Este libro ya no está en el lector. Pockit conserva lo que guardó de él, tus subrayados y tus notas.")
+                          : eb_state == 1 ? T("Este libro tiene DRM (por ejemplo, un préstamo de la biblioteca): su texto está cifrado y no se puede leer.")
+                                          : T("«Dónde voy» y «Personajes» leen el texto de los libros en ePub, y este está en otro formato."));
         }
         if (!ntramos) {
-            if (ai_on && eb_state == 0) hint(y, "¿Se te ha olvidado algo? Pídele a Pockit AI «Recuérdame qué ha pasado» y el resumen se quedará aquí.");
+            if (ai_on && eb_state == 0) hint(y, T("¿Se te ha olvidado algo? Pídele a Pockit AI «Recuérdame qué ha pasado» y el resumen se quedará aquí."));
             last_page_end = 1;
             return;
         }
         SetFont(f_bold, BLACK);
-        DrawString(M, y, "La historia hasta aquí");
+        DrawString(M, y, T("La historia hasta aquí"));
         y += 60;
     }
     /* los resúmenes guardados, en orden; cada uno con el capítulo donde empieza */
@@ -1096,7 +1102,7 @@ static void draw_donde(int y)
     int pg = 0, top0 = detail_page == 0 ? y : D_TOP, yy = top0, i = 0;
     for (; i < ntramos; i++) {
         char head[300];
-        snprintf(head, sizeof head, "Parte %d", i + 1);
+        snprintf(head, sizeof head, T("Parte %d"), i + 1);
         if (eb_state == 0 && tramos[i].start < eb.len) {
             int chi = ep_chapter_at(&eb, tramos[i].start);
             for (int k = chi; k < eb.nch && eb.ch[k].start < tramos[i].end; k++)   /* el primer capítulo de verdad del tramo */
@@ -1168,7 +1174,7 @@ static void load_people(void)
     if (people_for != detail) { npeople = -1; people_for = detail; p_open = -1; }
     if (eb_state != 0) npeople = 0;
     else if (people_pos != readpos || npeople < 0) {
-        busy("Buscando personajes…");
+        busy(T("Buscando personajes…"));
         EpPerson tmp[60];
         int n = ep_people(&eb, readpos, tmp, 60);
         npeople = 0;
@@ -1216,9 +1222,9 @@ static int person_row(int r, int y, int draw)
     int open = r == p_open, w = W - 2 * M, h = 50;
     char info[400] = "";
     if (p) {
-        snprintf(info, sizeof info, "%d menciones · desde «%s»", open && p_nfrag ? p_nfrag : p->count, eb.ch[p->first_ch].title[0] ? eb.ch[p->first_ch].title : "el principio");
+        snprintf(info, sizeof info, T("%d menciones · desde «%s»"), open && p_nfrag ? p_nfrag : p->count, eb.ch[p->first_ch].title[0] ? eb.ch[p->first_ch].title : T("el principio"));
         if (open && p->nwith) {
-            strncat(info, " · con ", sizeof info - strlen(info) - 1);
+            strncat(info, T(" · con "), sizeof info - strlen(info) - 1);
             for (int k = 0; k < p->nwith; k++) { if (k) strncat(info, ", ", sizeof info - strlen(info) - 1); strncat(info, people[p->with[k]].name, sizeof info - strlen(info) - 1); }
         }
     }
@@ -1245,14 +1251,14 @@ static int person_row(int r, int y, int draw)
         if (draw) { FillArea(M, y + h + 10, 5, ch, LINE); DrawTextRect(M + 30, y + h + 10, w - 30, ch, q, ALIGN_LEFT | DOTS); }
         h += ch + 24;
         if (p_nfrag > 1) {
-            snprintf(nav, sizeof nav, "%d de %d", p_frag + 1, p_nfrag);
+            snprintf(nav, sizeof nav, T("%d de %d"), p_frag + 1, p_nfrag);
             if (draw) {
                 SetFont(f_small, SOFT);
                 DrawTextRect(M, y + h, w, 56, nav, ALIGN_CENTER | VALIGN_MIDDLE);
                 SetFont(f_head, p_frag > 0 ? BLACK : LINE);
-                DrawTextRect(M, y + h, w / 3, 56, "‹ Antes", ALIGN_LEFT | VALIGN_MIDDLE);
+                DrawTextRect(M, y + h, w / 3, 56, T("‹ Antes"), ALIGN_LEFT | VALIGN_MIDDLE);
                 SetFont(f_head, p_frag + 1 < p_nfrag ? BLACK : LINE);
-                DrawTextRect(M + w - w / 3, y + h, w / 3, 56, "Después ›", ALIGN_RIGHT | VALIGN_MIDDLE);
+                DrawTextRect(M + w - w / 3, y + h, w / 3, 56, T("Después ›"), ALIGN_RIGHT | VALIGN_MIDDLE);
                 frag_y = y + h;
             }
             h += 60;
@@ -1267,12 +1273,12 @@ static void draw_personajes(int y)
 {
     int bottom = d_bottom();
     if (detail_page == 0) {
-        if (eb_state != 0 && !nprow) { y = hint_box(y, books[detail].gone ? "Este libro ya no está en el lector." : eb_state == 1 ? "Este libro tiene DRM: su texto no se puede leer." : "Esto funciona con libros en ePub, y este está en otro formato."); last_page_end = 1; return; }
-        if (!nprow && !others[0]) { hint_box(y, "Aún no aparecen nombres que se repitan."); last_page_end = 1; return; }
+        if (eb_state != 0 && !nprow) { y = hint_box(y, books[detail].gone ? T("Este libro ya no está en el lector.") : eb_state == 1 ? T("Este libro tiene DRM: su texto no se puede leer.") : T("Esto funciona con libros en ePub, y este está en otro formato.")); last_page_end = 1; return; }
+        if (!nprow && !others[0]) { hint_box(y, T("Aún no aparecen nombres que se repitan.")); last_page_end = 1; return; }
         int raw = 0;   /* nombres que nadie ha revisado aún */
         for (int r = 0; r < nprow; r++) if (prow[r].det >= 0 && !saved_for(people[prow[r].det].name)) raw++;
-        y = hint(y, ai_on && raw ? "Los nombres que más salen hasta donde vas. Toca uno para ver dónde aparece. Pídele a Pockit AI «Revisa los personajes» y separará los lugares y dirá quién es cada uno."
-                                 : "Los nombres que más salen hasta donde vas, sin destripes. Toca uno para ver dónde aparece.");
+        y = hint(y, ai_on && raw ? T("Los nombres que más salen hasta donde vas. Toca uno para ver dónde aparece. Pídele a Pockit AI «Revisa los personajes» y separará los lugares y dirá quién es cada uno.")
+                                 : T("Los nombres que más salen hasta donde vas, sin destripes. Toca uno para ver dónde aparece."));
     }
     p_n = 0;
     frag_y = -1;
@@ -1282,7 +1288,7 @@ static void draw_personajes(int y)
         if (r == nprow) {   /* al final, los lugares y las cosas */
             if (!others[0]) break;
             char line[1700];
-            snprintf(line, sizeof line, "Lugares y otros nombres: %s", others);
+            snprintf(line, sizeof line, T("Lugares y otros nombres: %s"), others);
             SetFont(f_small, SOFT);
             need = TextRectHeight(W - 2 * M, line, 0) + 20;
             if (yy + need > bottom && yy > (pg == 0 ? top0 : D_TOP)) { if (pg == detail_page) break; pg++; yy = D_TOP; }
@@ -1339,7 +1345,7 @@ static void load_book_notes(void)
         if (!match) continue;
         struct stat st;
         n->mtime = stat(n->path, &st) ? 0 : st.st_mtime;
-        if (!n->title[0]) snprintf(n->title, sizeof n->title, "Nota");
+        if (!n->title[0]) snprintf(n->title, sizeof n->title, T("Nota"));
         nbnotes++;
     }
     if (d) closedir(d);
@@ -1386,10 +1392,10 @@ static void draw_notas(int y)
     if (detail_page == 0) {
         char line[200];
         SetFont(f_bold, BLACK);
-        DrawString(M, y, "En tu Cuaderno");
+        DrawString(M, y, T("En tu Cuaderno"));
         y += 56;
         if (!nbnotes) {
-            snprintf(line, sizeof line, "Etiqueta una nota con #%s y aparecerá aquí.", btag);
+            snprintf(line, sizeof line, T("Etiqueta una nota con #%s y aparecerá aquí."), btag);
             y = hint(y, line);
         }
         for (int i = 0; i < nbnotes && i < 4; i++) {
@@ -1403,7 +1409,7 @@ static void draw_notas(int y)
             y += 64;
         }
         if (nbnotes > 4) {
-            snprintf(line, sizeof line, "Ver las %d notas con #%s  ›", nbnotes, btag);
+            snprintf(line, sizeof line, T("Ver las %d notas con #%s  ›"), nbnotes, btag);
             SetFont(f_small, BLACK);
             DrawString(M, y + 4, line);
             bn_all_y = y;
@@ -1411,9 +1417,9 @@ static void draw_notas(int y)
         }
         y += 24;
         SetFont(f_bold, BLACK);
-        DrawString(M, y, "Subrayados");
+        DrawString(M, y, T("Subrayados"));
         y += 60;
-        if (!b->marks) { hint(y, "Lo que subrayes en este libro aparecerá aquí."); last_page_end = 1; return; }
+        if (!b->marks) { hint(y, T("Lo que subrayes en este libro aparecerá aquí.")); last_page_end = 1; return; }
         first = y;
     }
     last_page_end = draw_mark_list(0, b->title, detail_page, first, D_TOP, bottom);
@@ -1425,7 +1431,7 @@ static void draw_detail(void)
     ai_on = ai_load_cfg();
     if (!ml_extra) ml_extra = explanation;
     SetFont(f_head, BLACK);
-    DrawString(M - 20, 42, "‹ Libros");
+    DrawString(M - 20, 42, T("‹ Libros"));
     /* el libro: portada, título, autor y cómo vas */
     cover(b, M, 110, 150, 225);
     int tx = M + 180, tw = W - M - tx;
@@ -1437,11 +1443,11 @@ static void draw_detail(void)
     DrawTextRect(tx, 112 + th, tw, 44, b->author[0] ? b->author : " ", ALIGN_LEFT | DOTS);
     char l1[160], l2[160], d[80];
     if (b->done) {
-        if (b->completed_ts) { fecha(b->completed_ts, d, sizeof d); snprintf(l1, sizeof l1, "Terminado el %s", d); } else snprintf(l1, sizeof l1, "Terminado");
-    } else if (b->progress > 0) snprintf(l1, sizeof l1, "%d %%  ·  página %d de %d", (int)(b->progress * 100 + 0.5), b->page, b->pages);
-    else snprintf(l1, sizeof l1, "Sin empezar");
-    if (b->gone) snprintf(l2, sizeof l2, "Ya no está en el lector");
-    else if (b->opened) { ago(b->opened, d, sizeof d); snprintf(l2, sizeof l2, "Leído por última vez %s", d); }
+        if (b->completed_ts) { fecha(b->completed_ts, d, sizeof d); snprintf(l1, sizeof l1, T("Terminado el %s"), d); } else snprintf(l1, sizeof l1, T("Terminado"));
+    } else if (b->progress > 0) snprintf(l1, sizeof l1, T("%d %%  ·  página %d de %d"), (int)(b->progress * 100 + 0.5), b->page, b->pages);
+    else snprintf(l1, sizeof l1, T("Sin empezar"));
+    if (b->gone) snprintf(l2, sizeof l2, T("Ya no está en el lector"));
+    else if (b->opened) { ago(b->opened, d, sizeof d); snprintf(l2, sizeof l2, T("Leído por última vez %s"), d); }
     else l2[0] = 0;
     if (b->progress > 0) bar(tx, 262, tw, 12, b->done ? 1 : b->progress);
     SetFont(f_small, SOFT);
@@ -1453,7 +1459,7 @@ static void draw_detail(void)
         int on = i == dtab, x = M + i * segw;
         if (on) FillArea(x, D_TABS_Y, segw - 8, 70, BLACK); else { DrawRect(x, D_TABS_Y, segw - 8, 70, SOFT); DrawRect(x + 1, D_TABS_Y + 1, segw - 10, 68, LINE); }
         SetFont(on ? f_tabb : f_tab, on ? WHITE : BLACK);
-        DrawTextRect(x, D_TABS_Y, segw - 8, 70, DTABS[i], ALIGN_CENTER | VALIGN_MIDDLE);
+        DrawTextRect(x, D_TABS_Y, segw - 8, 70, T(DTABS[i]), ALIGN_CENTER | VALIGN_MIDDLE);
     }
     switch (dtab) {
     case D_DONDE: draw_donde(D_TOP); break;
@@ -1506,7 +1512,7 @@ static void draw(void)
     prepare_detail();
     ClearScreen();
     if (error_msg[0]) {
-        header("Tu lectura", NULL);
+        header(T("Tu lectura"), NULL);
         SetFont(f_body, BLACK);
         DrawTextRect(M, 300, W - 2 * M, 300, error_msg, ALIGN_LEFT);
     } else if (detail >= 0) draw_detail();

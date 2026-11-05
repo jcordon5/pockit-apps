@@ -18,6 +18,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+/* En el idioma del lector: español si está en español; si no, inglés. */
+static int en(void) { static int e = -1; if (e < 0) { const char *l = currentLang(); e = !(l && l[0] == 'e' && l[1] == 's'); } return e; }
+#define L(es, eng) (en() ? (eng) : (es))
+
 #define LOG_PATH "/mnt/ext1/applications/.pruebas/bolsillo.txt"
 #define RESOURCES "/mnt/ext1/system/resources"
 #define SILENT_LOCK_S (30 * 60)   /* sin música media hora: bloqueo normal para no gastar */
@@ -128,16 +132,16 @@ static void draw_card(int st)
     for (int i = 0; i < 3; i++) DrawRect(cx + i, cy + i, cw - 2 * i, CARD_H - 2 * i, BLACK);
 
     SetFont(big, BLACK);
-    DrawTextRect(cx + 40, cy + 30, cw - 80, 70, "Modo bolsillo", ALIGN_LEFT | VALIGN_MIDDLE);
+    DrawTextRect(cx + 40, cy + 30, cw - 80, 70, L("Modo bolsillo", "Pocket mode"), ALIGN_LEFT | VALIGN_MIDDLE);
     char line[1100];
     if (title[0] && (SONANDO(st) || EN_PAUSA(st)))
-        snprintf(line, sizeof line, "%s%s%s%s", EN_PAUSA(st) ? "En pausa · " : "", title, author[0] ? " · " : "", author);
+        snprintf(line, sizeof line, "%s%s%s%s", EN_PAUSA(st) ? L("En pausa · ", "Paused · ") : "", title, author[0] ? " · " : "", author);
     else
-        snprintf(line, sizeof line, "No suena nada");
+        snprintf(line, sizeof line, "%s", L("No suena nada", "Nothing playing"));
     SetFont(small, BLACK);
     DrawTextRect(cx + 40, cy + 110, cw - 80, 90, line, ALIGN_LEFT | VALIGN_TOP | DOTS);
     SetFont(small, DGRAY);
-    DrawTextRect(cx + 40, cy + CARD_H - 80, cw - 80, 50, "Botón de página para volver", ALIGN_LEFT | VALIGN_MIDDLE);
+    DrawTextRect(cx + 40, cy + CARD_H - 80, cw - 80, 50, L("Botón de página para volver", "Page button to go back"), ALIGN_LEFT | VALIGN_MIDDLE);
     shown_state = st;
     snprintf(shown_title, sizeof shown_title, "%s", title);
 }

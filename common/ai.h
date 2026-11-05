@@ -33,6 +33,8 @@
 #define AI_ERRORS POCKIT_DIR "/errores.tsv"
 #define AI_DEEPSEEK "https://api.deepseek.com/chat/completions"
 
+const char *T(const char *es);   /* el texto en el idioma del lector (apps/pockit/i18n.c) */
+
 typedef struct { char id[80], name[48], desc[64], url[256]; double hit, in, out; int custom; } AiModel;
 static AiModel AI_MODELS[3] = {
     { "deepseek-flash", "Flash", "rápido y muy barato", AI_DEEPSEEK, 0.006, 0.3, 1.2, 0 },
@@ -242,24 +244,24 @@ static void ai_explain(AiResult *r, int curl_exit, const char *body)
         if (m >= 0) json_str(body, &t[m], msg, sizeof msg);
     } else if (body[0] && body[0] != '<') snprintf(msg, sizeof msg, "%.200s", body);
     const char *model = AI_MODELS[ai_model].name;
-    if (curl_exit == 6 || curl_exit == 7) snprintf(r->err, sizeof r->err, "No hay conexión con %s. Comprueba la wifi y vuelve a intentarlo.", prov);
-    else if (curl_exit == 28) snprintf(r->err, sizeof r->err, "%s tardó demasiado en responder. Vuelve a intentarlo en un momento.", prov);
-    else if (curl_exit == 35 || curl_exit == 60) snprintf(r->err, sizeof r->err, "No se pudo abrir una conexión segura con %s (error %d de curl). Revisa la fecha y hora del lector.", prov, curl_exit);
-    else if (curl_exit) snprintf(r->err, sizeof r->err, "No se pudo hablar con %s (error %d de curl).", prov, curl_exit);
-    else if (r->http == 401 || r->http == 403) snprintf(r->err, sizeof r->err, "%s no acepta la clave: es incorrecta o ha caducado. Cámbiala en «Uso y ajustes» o en pockit.yous.dev.", prov);
-    else if (r->http == 402) snprintf(r->err, sizeof r->err, "Tu cuenta de %s no tiene saldo. Recarga en su web y vuelve a intentarlo.", prov);
-    else if (r->http == 429) snprintf(r->err, sizeof r->err, "%s dice que hay demasiadas peticiones o que has llegado a tu límite. Espera un poco.%s%s", prov, msg[0] ? " Detalle: " : "", msg);
-    else if (r->http == 404 || strstr(msg, "odel not") || strstr(msg, "does not exist")) snprintf(r->err, sizeof r->err, "%s no tiene el modelo «%s». Elige otro en «Uso y ajustes».", prov, model);
-    else if (r->http == 400) snprintf(r->err, sizeof r->err, "%s rechazó la petición: %s", prov, msg[0] ? msg : "sin detalle");
-    else if (r->http >= 500) snprintf(r->err, sizeof r->err, "El modelo %s no está disponible ahora mismo (error %d de %s). Prueba en un rato o cambia de modelo.", model, r->http, prov);
-    else snprintf(r->err, sizeof r->err, "%s no respondió bien%s%s.", prov, msg[0] ? ": " : "", msg);
+    if (curl_exit == 6 || curl_exit == 7) snprintf(r->err, sizeof r->err, T("No hay conexión con %s. Comprueba la wifi y vuelve a intentarlo."), prov);
+    else if (curl_exit == 28) snprintf(r->err, sizeof r->err, T("%s tardó demasiado en responder. Vuelve a intentarlo en un momento."), prov);
+    else if (curl_exit == 35 || curl_exit == 60) snprintf(r->err, sizeof r->err, T("No se pudo abrir una conexión segura con %s (error %d de curl). Revisa la fecha y hora del lector."), prov, curl_exit);
+    else if (curl_exit) snprintf(r->err, sizeof r->err, T("No se pudo hablar con %s (error %d de curl)."), prov, curl_exit);
+    else if (r->http == 401 || r->http == 403) snprintf(r->err, sizeof r->err, T("%s no acepta la clave: es incorrecta o ha caducado. Cámbiala en «Uso y ajustes» o en pockit.yous.dev."), prov);
+    else if (r->http == 402) snprintf(r->err, sizeof r->err, T("Tu cuenta de %s no tiene saldo. Recarga en su web y vuelve a intentarlo."), prov);
+    else if (r->http == 429) snprintf(r->err, sizeof r->err, T("%s dice que hay demasiadas peticiones o que has llegado a tu límite. Espera un poco.%s%s"), prov, msg[0] ? T(" Detalle: ") : "", msg);
+    else if (r->http == 404 || strstr(msg, "odel not") || strstr(msg, "does not exist")) snprintf(r->err, sizeof r->err, T("%s no tiene el modelo «%s». Elige otro en «Uso y ajustes»."), prov, model);
+    else if (r->http == 400) snprintf(r->err, sizeof r->err, T("%s rechazó la petición: %s"), prov, msg[0] ? msg : T("sin detalle"));
+    else if (r->http >= 500) snprintf(r->err, sizeof r->err, T("El modelo %s no está disponible ahora mismo (error %d de %s). Prueba en un rato o cambia de modelo."), model, r->http, prov);
+    else snprintf(r->err, sizeof r->err, T("%s no respondió bien%s%s."), prov, msg[0] ? ": " : "", msg);
 }
 
 static int ai_online(char *err, size_t n)
 {
     if (QueryNetwork() & NET_CONNECTED) return 1;
     if (NetConnect2(NULL, true) == 0 || (QueryNetwork() & NET_CONNECTED)) return 1;
-    snprintf(err, n, "No hay conexión. Activa la wifi y vuelve a intentarlo.");
+    snprintf(err, n, T("No hay conexión. Activa la wifi y vuelve a intentarlo."));
     return 0;
 }
 
@@ -269,10 +271,10 @@ static int ai_online(char *err, size_t n)
 static int ai_stream(JBuf *body, const char *what, void (*on_text)(const char *text, void *ctx), void *ctx, AiResult *r)
 {
     memset(r, 0, sizeof *r);
-    if (!ai_bearer()[0]) { snprintf(r->err, sizeof r->err, "Falta la clave de la IA. Ponla en pockit.yous.dev → Tu lector → Apps → IA."); return 0; }
+    if (!ai_bearer()[0]) { snprintf(r->err, sizeof r->err, T("Falta la clave de la IA. Ponla en pockit.yous.dev → Tu lector → Apps → IA.")); return 0; }
     if (!ai_online(r->err, sizeof r->err)) return 0;
     FILE *f = fopen("/tmp/pk-peticion.json", "w"), *h = fopen("/tmp/pk-cabecera.txt", "w");
-    if (!f || !h) { if (f) fclose(f); if (h) fclose(h); snprintf(r->err, sizeof r->err, "No se pudo preparar la petición."); return 0; }
+    if (!f || !h) { if (f) fclose(f); if (h) fclose(h); snprintf(r->err, sizeof r->err, T("No se pudo preparar la petición.")); return 0; }
     fprintf(h, "Authorization: Bearer %s\nContent-Type: application/json\n", ai_bearer());
     fclose(h);
     fwrite(body->s, 1, body->len, f);
@@ -280,7 +282,7 @@ static int ai_stream(JBuf *body, const char *what, void (*on_text)(const char *t
     char cmd[600];
     snprintf(cmd, sizeof cmd, "curl -sN -m 180 -w '\\n__HTTP__%%{http_code}\\n' -H @/tmp/pk-cabecera.txt -d @/tmp/pk-peticion.json '%s'", AI_MODELS[ai_model].url);
     FILE *p = popen(cmd, "r");
-    if (!p) { remove("/tmp/pk-cabecera.txt"); snprintf(r->err, sizeof r->err, "No se pudo llamar a la IA."); return 0; }
+    if (!p) { remove("/tmp/pk-cabecera.txt"); snprintf(r->err, sizeof r->err, T("No se pudo llamar a la IA.")); return 0; }
     static char line[65536];
     static JTok t[1024];
     char other[2048] = "";
@@ -353,7 +355,7 @@ static int ai_stream(JBuf *body, const char *what, void (*on_text)(const char *t
     }
     for (int i = 0; i < r->ncalls; i++) if (!r->calls[i].args.s) jb_cat(&r->calls[i].args, "{}");
     if (curl_exit || (r->http && r->http != 200) || (!r->text.len && !r->ncalls)) {
-        if (!curl_exit && r->http == 200 && !other[0]) snprintf(r->err, sizeof r->err, "La IA no devolvió nada. Vuelve a intentarlo.");
+        if (!curl_exit && r->http == 200 && !other[0]) snprintf(r->err, sizeof r->err, T("La IA no devolvió nada. Vuelve a intentarlo."));
         else ai_explain(r, curl_exit, other);
         ai_log_error(what, r->err);
         return 0;
@@ -367,7 +369,7 @@ static int ai_stream(JBuf *body, const char *what, void (*on_text)(const char *t
 static double ai_last_cost;
 static char *ai_complete(const char *system_prompt, const char *user, int max_tokens, const char *what, char *err, size_t errn)
 {
-    if (!ai_bearer()[0] && !ai_load_cfg()) { snprintf(err, errn, "Falta la clave de la IA."); return NULL; }
+    if (!ai_bearer()[0] && !ai_load_cfg()) { snprintf(err, errn, T("Falta la clave de la IA.")); return NULL; }
     JBuf b = { 0 };
     ai_body_begin(&b, max_tokens, 0.3);
     /* el mensaje de sistema va primero y siempre igual: así se cachea y cuesta mucho menos */
@@ -382,7 +384,7 @@ static char *ai_complete(const char *system_prompt, const char *user, int max_to
     ai_last_cost = r.cost;
     char *out = NULL;
     if (ok && r.text.len) { out = r.text.s; r.text.s = NULL; }
-    else snprintf(err, errn, "%s", r.err[0] ? r.err : "La IA no respondió.");
+    else snprintf(err, errn, "%s", r.err[0] ? r.err : T("La IA no respondió."));
     ai_result_free(&r);
     return out;
 }

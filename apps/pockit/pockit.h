@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.3.1"
+#define POCKIT_VERSION "2.4.0"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -30,6 +30,10 @@ int ajustes_handler(int, int, int);
 void lectura_args(int, char **);
 void cuaderno_args(int, char **);
 void ia_args(int, char **);
+
+/* Idioma (i18n.c): español o inglés, según el idioma del lector */
+const char *T(const char *es);   /* el texto en el idioma del lector */
+int pockit_en(void);             /* 1 si el lector no está en español */
 
 /* «‹ Pockit» arriba a la izquierda, igual en todos los módulos (main.c). */
 void pockit_back(void);

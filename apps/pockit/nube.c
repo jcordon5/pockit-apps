@@ -167,7 +167,7 @@ static int refresh_token(char *err, size_t n)
     FILE *f = fopen(NUBE_CFG, "r");
     while (f && fgets(line, sizeof line, f)) if (!strncmp(line, "refresh=", 8)) { snprintf(refresh, sizeof refresh, "%s", line + 8); refresh[strcspn(refresh, "\r\n")] = 0; }
     if (f) fclose(f);
-    if (!refresh[0]) { snprintf(err, n, "Pockit no está enlazado con Dropbox."); return 0; }
+    if (!refresh[0]) { snprintf(err, n, T("Pockit no está enlazado con Dropbox.")); return 0; }
     FILE *b = fopen(TMP_BODY, "w");
     if (!b) return 0;
     fprintf(b, "grant_type=refresh_token&refresh_token=%s&client_id=" APP_KEY, refresh);
@@ -191,9 +191,9 @@ static int refresh_token(char *err, size_t n)
         }
     }
     free(s);
-    if (code < 0) snprintf(err, n, code == -6 || code == -7 ? "No hay conexión con Dropbox." : "No se pudo hablar con Dropbox (error %d de curl).", -code);
-    else if (code == 400 || code == 401) snprintf(err, n, "Dropbox ya no da permiso a Pockit. Vuelve a enlazarlo desde pockit.yous.dev, con el cable.");
-    else snprintf(err, n, "Dropbox respondió con un error (%d).", code);
+    if (code < 0) snprintf(err, n, code == -6 || code == -7 ? T("No hay conexión con Dropbox.") : T("No se pudo hablar con Dropbox (error %d de curl)."), -code);
+    else if (code == 400 || code == 401) snprintf(err, n, T("Dropbox ya no da permiso a Pockit. Vuelve a enlazarlo desde pockit.yous.dev, con el cable."));
+    else snprintf(err, n, T("Dropbox respondió con un error (%d)."), code);
     return 0;
 }
 
@@ -292,7 +292,7 @@ static int list_remote(char *err, size_t n)
         remove(TMP_OUT);
         if (code == 409 && s && strstr(s, "not_found")) { free(s); return 0; }
         if (code != 200 || !s) {
-            snprintf(err, n, code < 0 ? "No hay conexión con Dropbox." : "Dropbox no dejó ver tu carpeta Pockit (%d).", code);
+            snprintf(err, n, code < 0 ? T("No hay conexión con Dropbox.") : T("Dropbox no dejó ver tu carpeta Pockit (%d)."), code);
             free(s);
             return -1;
         }
@@ -513,15 +513,15 @@ long nube_last(char *msg, size_t n)
     int ok = 0, up = 0, down = 0, conflicts = 0;
     char err[400] = "";
     sscanf(line, "%ld\t%d\t%d\t%d\t%d\t%399[^\n]", &when, &ok, &up, &down, &conflicts, err);
-    if (!when) { snprintf(msg, n, "Aún no se ha sincronizado."); return 0; }
+    if (!when) { snprintf(msg, n, T("Aún no se ha sincronizado.")); return 0; }
     struct tm tm;
     time_t t = when;
     localtime_r(&t, &tm);
     char d[40];
-    snprintf(d, sizeof d, "%d/%d a las %02d:%02d", tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min);
-    if (!ok) snprintf(msg, n, "El %s no se pudo: %s", d, err);
-    else if (conflicts) snprintf(msg, n, "Sincronizado el %s. %d archivo%s cambió en los dos sitios: están las dos versiones, la de Dropbox con «(Dropbox)» en el nombre.", d, conflicts, conflicts == 1 ? "" : "s");
-    else snprintf(msg, n, "Sincronizado el %s.", d);
+    snprintf(d, sizeof d, T("%d/%d a las %02d:%02d"), tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min);
+    if (!ok) snprintf(msg, n, T("El %s no se pudo: %s"), d, err);
+    else if (conflicts) snprintf(msg, n, T("Sincronizado el %s. %d archivo%s cambió en los dos sitios: están las dos versiones, la de Dropbox con «(Dropbox)» en el nombre."), d, conflicts, conflicts == 1 ? "" : "s");
+    else snprintf(msg, n, T("Sincronizado el %s."), d);
     return when;
 }
 
@@ -529,8 +529,8 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
 {
     char err[300] = "";
     out[0] = 0;
-    if (!nube_linked()) { snprintf(out, n, "Pockit no está enlazado con Dropbox."); return 0; }
-    if (!online(interactive)) { snprintf(out, n, "No hay conexión. Se sincronizará cuando haya wifi."); return 0; }
+    if (!nube_linked()) { snprintf(out, n, T("Pockit no está enlazado con Dropbox.")); return 0; }
+    if (!online(interactive)) { snprintf(out, n, T("No hay conexión. Se sincronizará cuando haya wifi.")); return 0; }
     if (!refresh_token(err, sizeof err)) { note_last(0, 0, 0, 0, err); snprintf(out, n, "%s", err); return 0; }
     reset();
     load_state();
@@ -553,7 +553,7 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
         Item *it = &items[i];
         int lchg = changed_here(it), rchg = it->r && (!it->s || strcmp(it->rrev, it->srev));
         if (!(lchg || rchg || (it->s && (!it->l || !it->r)))) continue;
-        if (progress && total > 2) { char m[80]; snprintf(m, sizeof m, "Sincronizando con Dropbox… %d de %d", ++done, total); progress(m); }
+        if (progress && total > 2) { char m[80]; snprintf(m, sizeof m, T("Sincronizando con Dropbox… %d de %d"), ++done, total); progress(m); }
         if (it->l && it->r) {
             if (lchg && !rchg) { if (upload(it, it->srev)) up++; else failed++; }
             else if (!lchg && rchg) { if (download(it, it->rel)) { record_download(it); down++; } else failed++; }
@@ -588,7 +588,7 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
         } else it->s = 0;   /* ya no está en ningún sitio */
     }
     save_state();
-    if (failed) snprintf(err, sizeof err, failed == 1 ? "un archivo no se pudo copiar; se reintentará la próxima vez." : "%d archivos no se pudieron copiar; se reintentará la próxima vez.", failed);
+    if (failed) snprintf(err, sizeof err, failed == 1 ? T("un archivo no se pudo copiar; se reintentará la próxima vez.") : T("%d archivos no se pudieron copiar; se reintentará la próxima vez."), failed);
     note_last(!failed, up, down, conflicts, failed ? err : NULL);
     nube_last(out, n);
     return !failed;

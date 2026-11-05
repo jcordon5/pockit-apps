@@ -515,7 +515,13 @@ static const char *ep_stop[] = {
     "aquel", "aquella", "aquí", "allí", "ahora", "nunca", "siempre", "también", "tampoco", "vamos", "mire", "oye", "hola",
     "adiós", "gracias", "sr", "sra", "ii", "iii", "iv", "vi", "vii", "viii", "ix", "x", "xi", "xii", "the", "and", "of",
     "dónde", "quién", "cuál", "cuánto", "porque", "aunque", "mientras", "luego", "tal", "todo", "toda", "nada", "nadie",
-    "le", "les", "me", "te", "nos", "os", "otro", "otra", "muy", "bien", "mal", "fin", "dios", "virgen", "santo", "san", NULL };
+    "le", "les", "me", "te", "nos", "os", "otro", "otra", "muy", "bien", "mal", "fin", "dios", "virgen", "santo", "san",
+    /* libros en inglés: tratamientos, días, meses y palabras que van en mayúscula sin ser nadie */
+    "mr", "mrs", "miss", "ms", "sir", "madam", "lady", "lord", "god", "chapter", "part", "book", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february", "march", "april", "june", "july",
+    "august", "september", "october", "november", "december", "yes", "oh", "ah", "but", "what", "where", "when", "why",
+    "how", "then", "there", "this", "that", "my", "his", "her", "our", "their", "your", "well", "now", "so", "if", "it",
+    "he", "she", "we", "they", "you", "in", "on", "at", "to", "for", "with", "not", NULL };
 
 static int ep_is_stop(const char *k) { for (int i = 0; ep_stop[i]; i++) if (!strcmp(k, ep_stop[i])) return 1; return 0; }
 
@@ -602,7 +608,7 @@ static void ep_count_word(void *vc, long off, int len, int up, int sentence, int
         w->cap++;
         if (w->first < 0) { w->first = off; snprintf(w->shown, sizeof w->shown, "%.*s", len < 60 ? len : 60, c->text + off); }
         /* «en París», «hacia Pekín»: lugar; «la Historia», «las Matemáticas»: una cosa, no alguien */
-        if (!strcmp(c->prev, "en") || !strcmp(c->prev, "hacia") || !strcmp(c->prev, "desde")) w->place++;
+        if (!strcmp(c->prev, "en") || !strcmp(c->prev, "hacia") || !strcmp(c->prev, "desde") || !strcmp(c->prev, "in")) w->place++;   /* «in London» */
         if (!strcmp(c->prev, "la") || !strcmp(c->prev, "las") || !strcmp(c->prev, "los")) w->thing++;
     }
     /* dos nombres seguidos («Sancho Panza»): se cuentan para unirlos luego */

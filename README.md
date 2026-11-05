@@ -2,7 +2,9 @@
 
 **Mejora tu PocketBook de fábrica, sin jailbreak ni root.** Una app nativa que se instala con un clic desde [pockit.yous.dev](https://pockit.yous.dev) y lleva al lector lo que le falta, con IA que gasta céntimos por libro.
 
-*English: a native “reading hub” for PocketBook e‑readers — reading stats, a book card with where you left off and who's who, tagged Markdown notes synced through the reader's own Dropbox, an optional AI agent that knows your books, highlights and notes, and sleep‑screen wallpapers. No jailbreak; install it from the web with one click.*
+*English: a native “reading hub” for PocketBook e‑readers — reading stats, a book page with where you left off and who's who (without spoilers), tagged Markdown notes synced with your Dropbox, an optional AI agent that knows your books, highlights and notes, and sleep‑screen wallpapers. No jailbreak; install it from the web with one click. The apps speak English and Spanish and follow the reader's language. How it's built: [An AI agent inside a €150 e-ink reader, without jailbreaking it](https://yous.dev/blog/ai-agent-inside-an-e-ink-reader).*
+
+**Idiomas:** español e inglés. Pockit sigue el idioma del lector (Ajustes del lector → Idioma): en español, en español; en cualquier otro, en inglés. Los textos están en el código en español y `T("…")` los traduce con la tabla de `apps/pockit/en.h`.
 
 ![Inicio, Dónde voy, Personajes, explicación de un subrayado y apuntes, con el Quijote](docs/pockit-ia.png)
 

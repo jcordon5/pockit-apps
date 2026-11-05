@@ -168,7 +168,7 @@ static int per_page(void) { return COLS * ((H - 330) / (TH + 70)); }
 static void header(const char *title, const char *sub)
 {
     SetFont(f_head, BLACK);
-    DrawString(M - 20, 42, "‹ Pockit");
+    DrawString(M - 20, 42, T("‹ Pockit"));
     SetFont(f_title, BLACK);
     DrawString(M, 110, title);
     if (sub) { SetFont(f_small, SOFT); DrawString(M, 190, sub); }
@@ -177,11 +177,11 @@ static void header(const char *title, const char *sub)
 static void draw_grid(void)
 {
     ClearScreen();
-    header("Fondos", nimgs ? "Toca uno para ponerlo de fondo de reposo" : NULL);
+    header(T("Fondos"), nimgs ? T("Toca uno para ponerlo de fondo de reposo") : NULL);
     if (!nimgs) {
         SetFont(f_body, SOFT);
         DrawTextRect(M, 400, W - 2 * M, 400,
-                     "Aún no tienes fondos.\n\nAñádelos desde el ordenador en pockit.yous.dev → Tu lector → Fondos, o pon fotos en la carpeta Photo del lector.", ALIGN_CENTER);
+                     T("Aún no tienes fondos.\n\nAñádelos desde el ordenador en pockit.yous.dev → Tu lector → Fondos, o pon fotos en la carpeta Photo del lector."), ALIGN_CENTER);
         refresh();
         return;
     }
@@ -201,12 +201,12 @@ static void draw_grid(void)
         DrawRect(x, y, TW, TH, LINE);
         const char *nm = strrchr(imgs[i], '/') + 1;
         SetFont(f_small, SOFT);
-        DrawTextRect(x, y + TH + 6, TW, 40, i < nfondos ? nm : "Foto", ALIGN_CENTER | DOTS);
+        DrawTextRect(x, y + TH + 6, TW, 40, i < nfondos ? nm : T("Foto"), ALIGN_CENTER | DOTS);
     }
     int pages = (nimgs + per - 1) / per;
     if (pages > 1) {
         char pg[40];
-        snprintf(pg, sizeof pg, "‹   %d de %d   ›", page + 1, pages);
+        snprintf(pg, sizeof pg, T("‹   %d de %d   ›"), page + 1, pages);
         SetFont(f_body, BLACK);
         DrawTextRect(0, H - 90, W, 60, pg, ALIGN_CENTER | VALIGN_MIDDLE);
     }
@@ -216,7 +216,7 @@ static void draw_grid(void)
 static void draw_preview(void)
 {
     ClearScreen();
-    header("Fondo de reposo", NULL);
+    header(T("Fondo de reposo"), NULL);
     int ph = H - 520, pw = ph * W / H, x = (W - pw) / 2, y = 220;
     ibitmap *b = thumb(imgs[preview]);
     FillArea(x, y, pw, ph, WHITE);
@@ -224,13 +224,13 @@ static void draw_preview(void)
     if (b) { StretchBitmap(x, y, pw, ph, b, 0); free(b); }
     DrawRect(x, y, pw, ph, BLACK);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y + ph + 16, W - 2 * M, 40, preview < nfondos ? "Lo transparente deja ver la página que estabas leyendo" : "Las fotos se ponen enteras, sin transparencia", ALIGN_CENTER);
+    DrawTextRect(M, y + ph + 16, W - 2 * M, 40, preview < nfondos ? T("Lo transparente deja ver la página que estabas leyendo") : T("Las fotos se ponen enteras, sin transparencia"), ALIGN_CENTER);
     int by = H - 200;
     FillArea(M, by, W - 2 * M, 100, BLACK);
     SetFont(f_bold, WHITE);
-    DrawTextRect(M, by, W - 2 * M, 100, "Poner de fondo de reposo", ALIGN_CENTER | VALIGN_MIDDLE);
+    DrawTextRect(M, by, W - 2 * M, 100, T("Poner de fondo de reposo"), ALIGN_CENTER | VALIGN_MIDDLE);
     SetFont(f_body, BLACK);
-    DrawTextRect(M, by + 110, W - 2 * M, 60, "Cancelar", ALIGN_CENTER | VALIGN_MIDDLE);
+    DrawTextRect(M, by + 110, W - 2 * M, 60, T("Cancelar"), ALIGN_CENTER | VALIGN_MIDDLE);
     refresh();
 }
 
@@ -239,7 +239,7 @@ static void apply(void)
     const char *src = imgs[preview];
     FillArea(M, H - 200, W - 2 * M, 100, WHITE);
     SetFont(f_body, BLACK);
-    DrawTextRect(M, H - 200, W - 2 * M, 100, "Preparando el fondo…", ALIGN_CENTER | VALIGN_MIDDLE);
+    DrawTextRect(M, H - 200, W - 2 * M, 100, T("Preparando el fondo…"), ALIGN_CENTER | VALIGN_MIDDLE);
     PartialUpdate(M, H - 200, W - 2 * M, 100);
     unsigned char *px = render(src, W, H);
     char dst[400], bak[420];
@@ -254,8 +254,8 @@ static void apply(void)
     int ok = px && write_bmp(dst, px, W, H) == 0;
     free(px);
     preview = -1;
-    Message(ok ? ICON_INFORMATION : ICON_WARNING, "Fondos",
-            ok ? "Fondo de reposo cambiado. Bloquea el lector para verlo; si sigue el anterior, reinícialo una vez." : "No se pudo preparar la imagen.", 4000);
+    Message(ok ? ICON_INFORMATION : ICON_WARNING, T("Fondos"),
+            ok ? T("Fondo de reposo cambiado. Bloquea el lector para verlo; si sigue el anterior, reinícialo una vez.") : T("No se pudo preparar la imagen."), 4000);
     draw_grid();
 }
 
