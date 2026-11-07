@@ -422,7 +422,7 @@ static void build_events(void)
 static long day_start(long t) { struct tm tm; time_t x = t; localtime_r(&x, &tm); tm.tm_hour = tm.tm_min = tm.tm_sec = 0; tm.tm_isdst = -1; return mktime(&tm); }
 
 /* ---------- aspecto ---------- */
-static ifont *f_title, *f_big, *f_huge, *f_head, *f_htitle, *f_body, *f_bold, *f_ital, *f_small, *f_smallb, *f_tab, *f_tabb;
+static ifont *f_title, *f_big, *f_huge, *f_head, *f_htitle, *f_body, *f_bold, *f_ital, *f_small, *f_smallb, *f_tab, *f_tabb, *f_tiny;
 static int W, H, shown_once;
 static enum { RESUMEN, ACTIVIDAD, LIBROS, SUBRAYADOS, PALABRAS, NTABS } tab = RESUMEN;
 static int page_of[NTABS];
@@ -484,6 +484,13 @@ static void cover(const Book *b, int x, int y, int w, int h)
     }
 }
 
+/* En pantallas estrechas (PocketBook Q, 788 px) algunas etiquetas no caben: se usa una letra menor */
+static void fit_font(ifont *f, ifont *smaller, int color, const char *s, int w)
+{
+    SetFont(f, color);
+    if (StringWidth(s) > w) SetFont(smaller, color);
+}
+
 static void draw_tabs(void)
 {
     static const char *names[] = { "Resumen", "Actividad", "Libros", "Subrayados", "Palabras" };
@@ -492,7 +499,7 @@ static void draw_tabs(void)
     DrawLine(0, y, W, y, BLACK);
     for (int i = 0; i < NTABS; i++) {
         int on = i == (int)tab;
-        SetFont(on ? f_tabb : f_tab, on ? BLACK : SOFT);
+        fit_font(on ? f_tabb : f_tab, on ? f_smallb : f_tiny, on ? BLACK : SOFT, T(names[i]), tw - 12);
         DrawTextRect(i * tw, y, tw, TABS_H, T(names[i]), ALIGN_CENTER | VALIGN_MIDDLE);
         if (on) FillArea(i * tw + 30, y + TABS_H - 14, tw - 60, 6, BLACK);
     }
@@ -505,7 +512,7 @@ static void header(const char *title, const char *sub)
     pockit_back();
     SetFont(f_title, BLACK);
     DrawString(M, 110, title);
-    if (sub) { SetFont(f_small, SOFT); DrawString(M, 186, sub); }
+    if (sub) { SetFont(f_small, SOFT); DrawTextRect(M, 186, W - 2 * M, 40, sub, ALIGN_LEFT | DOTS); }
 }
 
 /* Botones de página encima de las pestañas: «‹ Anterior    2 de 5    Siguiente ›». */
@@ -534,7 +541,7 @@ static void stat_box(int x, int w, int y, int value, const char *label)
     snprintf(v, sizeof v, "%d", value);
     SetFont(f_big, BLACK);
     DrawTextRect(x, y, w, 80, v, ALIGN_CENTER | VALIGN_MIDDLE);
-    SetFont(f_small, SOFT);
+    fit_font(f_small, f_tiny, SOFT, label, w - 6);
     DrawTextRect(x, y + 82, w, 40, label, ALIGN_CENTER);
 }
 
@@ -557,7 +564,7 @@ static void reading_item(const Book *b, int y)
     ago(b->opened, when, sizeof when);
     snprintf(info, sizeof info, T("%d %%  ·  página %d de %d  ·  %s"), (int)(b->progress * 100 + 0.5), b->page, b->pages, when);
     SetFont(f_small, SOFT);
-    DrawString(tx, y + 140, info);
+    DrawTextRect(tx, y + 140, tw, 40, info, ALIGN_LEFT | DOTS);
 }
 
 static int reading_idx[3], nreading, reading_y0;
@@ -734,7 +741,7 @@ static void draw_libros(void)
         if (b->marks) { char m[40]; snprintf(m, sizeof m, T("  ·  %d subrayado%s"), b->marks, b->marks == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
         if (b->words) { char m[40]; snprintf(m, sizeof m, T("  ·  %d palabra%s"), b->words, b->words == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
         if (b->progress > 0) bar(tx, y + 104, tw, 10, b->done ? 1 : b->progress);
-        DrawString(tx, y + 126, info);
+        DrawTextRect(tx, y + 126, tw, 40, info, ALIGN_LEFT | DOTS);
         DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
     }
     int pages = (nbooks + per - 1) / per;
@@ -848,7 +855,7 @@ static void draw_palabras(void)
     build_vocab();
     char sub[120];
     snprintf(sub, sizeof sub, T("%d por aprender  ·  %d aprendida%s"), npending, nlearned, nlearned == 1 ? "" : "s");
-    if (vcards) { SetFont(f_head, BLACK); DrawString(M - 20, 42, T("‹ Lista")); SetFont(f_small, SOFT); DrawString(M, 186, sub); }
+    if (vcards) { SetFont(f_head, BLACK); DrawString(M - 20, 42, T("‹ Lista")); SetFont(f_small, SOFT); DrawTextRect(M, 186, W - 2 * M, 40, sub, ALIGN_LEFT | DOTS); }
     else header(T("Palabras"), sub);
     /* filtro */
     static const char *fl[] = { "Por aprender", "Aprendidas" };
@@ -918,7 +925,8 @@ static void draw_palabras(void)
         int dis = (i == 0 && card == 0) || (i == 3 && card + 1 >= nvocab);
         DrawRect(x, by, bw, 100, dis ? LINE : BLACK);
         DrawRect(x + 1, by + 1, bw - 2, 98, dis ? LINE : BLACK);
-        SetFont(i == 0 || i == 3 ? f_title : f_body, dis ? LINE : BLACK);
+        if (i == 0 || i == 3) SetFont(f_title, dis ? LINE : BLACK);
+        else fit_font(f_body, f_small, dis ? LINE : BLACK, T(labels[i]), bw - 12);
         DrawTextRect(x, by, bw, 100, T(labels[i]), ALIGN_CENTER | VALIGN_MIDDLE);
     }
     last_page_end = 1;
@@ -1611,6 +1619,7 @@ static int handler(int type, int par1, int par2)
         f_smallb = OpenFont(DEFAULTFONTB, 28, 1);
         f_tab = OpenFont(DEFAULTFONT, 30, 1);
         f_tabb = OpenFont(DEFAULTFONTB, 30, 1);
+        f_tiny = OpenFont(DEFAULTFONT, 24, 1);
         load_data();
         if (!nevents) { load_vocab(); build_events(); }
         time_t now = time(NULL);

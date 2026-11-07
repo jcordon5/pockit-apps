@@ -171,7 +171,7 @@ static void header(const char *title, const char *sub)
     DrawString(M - 20, 42, T("‹ Pockit"));
     SetFont(f_title, BLACK);
     DrawString(M, 110, title);
-    if (sub) { SetFont(f_small, SOFT); DrawString(M, 190, sub); }
+    if (sub) { SetFont(f_small, SOFT); DrawTextRect(M, 190, W - 2 * M, 40, sub, ALIGN_LEFT | DOTS); }
 }
 
 static void draw_grid(void)

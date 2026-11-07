@@ -366,3 +366,4 @@
 { "≈ %s por consulta%s", "≈ %s per question%s" },
 { "Bajando «%s»…", "Downloading “%s”…" },
 { "Subiendo «%s»…", "Uploading “%s”…" },
+{ "Para hacer", "To do" },

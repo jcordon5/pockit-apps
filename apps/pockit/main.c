@@ -13,6 +13,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 #include "pockit.h"
 #include "../../common/ai.h"
 #include "icons.h"
@@ -102,6 +103,61 @@ ibitmap *pockit_icon(int mod)
     return NULL;
 }
 
+/* «Para hacer»: las tareas sin hacer del Cuaderno («- [ ] …»), de las notas más recientes primero.
+ * Solo si sobra sitio entre la semana y los módulos (en el Q, con su pantalla alta, caben varias). */
+#define MAX_TASKS 12
+typedef struct { char text[200], note[600]; long mtime; } HomeTask;
+static HomeTask tasks[MAX_TASKS];
+static int ntasks, tasks_y0, tasks_shown;
+#define TASK_ROW 60
+
+static void load_tasks(void)
+{
+    ntasks = 0;
+    char dir[600];
+    pockit_path(dir, sizeof dir, "Notas");
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    static HomeTask all[200];
+    int nall = 0;
+    while ((e = readdir(d)) && nall < 200) {
+        size_t l = strlen(e->d_name);
+        if (e->d_name[0] == '.' || l < 4 || strcmp(e->d_name + l - 3, ".md")) continue;
+        char path[900];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st)) continue;
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char line[600];
+        while (fgets(line, sizeof line, f) && nall < 200) {
+            char *t = line;
+            while (*t == ' ' || *t == '\t') t++;
+            if (strncmp(t, "- [ ] ", 6)) continue;
+            t += 6;
+            HomeTask *k = &all[nall];
+            int o = 0;
+            for (; *t && *t != '\n' && *t != '\r' && o < (int)sizeof k->text - 1; t++)
+                if (*t != '*' && *t != '`' && *t != '_') k->text[o++] = *t;   /* sin marcas de Markdown */
+            k->text[o] = 0;
+            if (!o) continue;
+            snprintf(k->note, sizeof k->note, "%s", path);
+            k->mtime = st.st_mtime;
+            nall++;
+        }
+        fclose(f);
+    }
+    closedir(d);
+    for (int i = 0; i < nall && ntasks < MAX_TASKS; i++) {   /* las de las notas más recientes */
+        int best = -1;
+        for (int j = 0; j < nall; j++) if (all[j].mtime >= 0 && (best < 0 || all[j].mtime > all[best].mtime)) best = j;
+        if (best < 0) break;
+        tasks[ntasks++] = all[best];
+        all[best].mtime = -1;
+    }
+}
+
 static void draw_home(void)
 {
     fonts();
@@ -177,6 +233,28 @@ static void draw_home(void)
     }
     y += 120;
 
+    /* para hacer, si cabe */
+    tiles_y0 = H - 2 * TILE_H - 40;
+    tasks_shown = 0;
+    load_tasks();
+    int rows = (tiles_y0 - 30 - (y + 64)) / TASK_ROW;
+    if (ntasks && rows >= 2) {
+        DrawLine(M, y - 20, W - M, y - 20, LINE);
+        y += 10;
+        SetFont(f_bold, BLACK);
+        DrawString(M, y, T("Para hacer"));
+        y += 64;
+        tasks_y0 = y;
+        tasks_shown = ntasks < rows ? ntasks : rows;
+        for (int i = 0; i < tasks_shown; i++) {
+            int ty = y + i * TASK_ROW;
+            DrawRect(M, ty + 10, 34, 34, BLACK);
+            DrawRect(M + 1, ty + 11, 32, 32, BLACK);
+            SetFont(f_body, BLACK);
+            DrawTextRect(M + 56, ty, W - 2 * M - 56, TASK_ROW, tasks[i].text, ALIGN_LEFT | DOTS);
+        }
+    }
+
     /* módulos */
     tiles_y0 = H - 2 * TILE_H - 40;
     int tw = (W - 2 * M) / 3;
@@ -239,6 +317,8 @@ static int home_handler(int type, int par1, int par2)
         if (y >= tiles_y0) {
             int i = ((y - tiles_y0) / TILE_H) * 3 + (x - M) / ((W - 2 * M) / 3);
             if (i >= 0 && i < NTILES && x >= M) pockit_open(TILES[i].mod);
+        } else if (tasks_shown && y >= tasks_y0 && y < tasks_y0 + tasks_shown * TASK_ROW) {
+            cuaderno_open_note(tasks[(y - tasks_y0) / TASK_ROW].note);
         } else if (y >= card_y0 && y < card_y1) lectura_open_current();
         return 1;
     }
@@ -349,7 +429,7 @@ static void do_update(int button)
 
 /* ---------- Ajustes ---------- */
 static int aj_shown;
-static int ai_y, ver_y, data_y;
+static int ai_y, ver_y, data_y, ai_h = 140, ver_h = 140, data_h = 200;
 static void draw_ajustes(void);
 
 /* un interruptor como los del lector: «on» en negro a la derecha */
@@ -410,12 +490,13 @@ static void draw_ajustes(void)
     char last[400];
     if (linked) nube_last(last, sizeof last);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 54, W - 2 * M, 150,
-                 linked ? last
+    const char *dtxt = linked ? last
                  : pockit_dropbox() ? T("Tus datos están en la carpeta Dropbox PocketBook, pero la sincronización del lector no sabe sustituir archivos. Para sincronizarlos bien, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox».")
-                 : T("Para tener tus notas, chats y libros también en el móvil, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox»."),
-                 ALIGN_LEFT);
-    y += 220;
+                 : T("Para tener tus notas, chats y libros también en el móvil, conecta el lector por cable y, en pockit.yous.dev → Tu lector → Apps, pulsa «Enlazar con Dropbox».");
+    int th = TextRectHeight(W - 2 * M, dtxt, ALIGN_LEFT);   /* en pantallas estrechas ocupa más líneas */
+    DrawTextRect(M, y + 54, W - 2 * M, th, dtxt, ALIGN_LEFT);
+    data_h = 54 + th;
+    y += 54 + th + 40;
     DrawLine(M, y, W - M, y, LINE);
     y += 30;
 
@@ -432,9 +513,12 @@ static void draw_ajustes(void)
     else snprintf(line, sizeof line, T("Sin activar"));
     DrawString(M, y, line);
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y + 50, W - 2 * M, 80, has ? T("Modelo, clave, gasto y errores: en Pockit AI → Uso y ajustes  ›")
-                                               : T("Es opcional. Para activarla, pega una clave en pockit.yous.dev → Tu lector → Apps → IA."), ALIGN_LEFT);
-    y += 160;
+    const char *atxt = has ? T("Modelo, clave, gasto y errores: en Pockit AI → Uso y ajustes  ›")
+                           : T("Es opcional. Para activarla, pega una clave en pockit.yous.dev → Tu lector → Apps → IA.");
+    th = TextRectHeight(W - 2 * M, atxt, ALIGN_LEFT);
+    DrawTextRect(M, y + 50, W - 2 * M, th, atxt, ALIGN_LEFT);
+    ai_h = 50 + th;
+    y += 50 + th + 30;
     DrawLine(M, y, W - M, y, LINE);
     y += 30;
 
@@ -457,10 +541,13 @@ static void draw_ajustes(void)
         snprintf(line, sizeof line, T("Al día (mirado el %s). Toca para mirar otra vez."), d);
         SetFont(f_small, SOFT);
     } else { snprintf(line, sizeof line, T("Toca para buscar actualizaciones.")); SetFont(f_small, SOFT); }
-    DrawTextRect(M, y + 50, W - 2 * M, 80, line, ALIGN_LEFT);
-    y += 150;
+    th = TextRectHeight(W - 2 * M, line, ALIGN_LEFT);
+    DrawTextRect(M, y + 50, W - 2 * M, th, line, ALIGN_LEFT);
+    ver_h = 50 + th;
+    y += 50 + th + 30;
     SetFont(f_small, SOFT);
-    DrawTextRect(M, y, W - 2 * M, 120, T("Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev"), ALIGN_LEFT);
+    const char *itxt = T("Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev");
+    DrawTextRect(M, y, W - 2 * M, TextRectHeight(W - 2 * M, itxt, ALIGN_LEFT), itxt, ALIGN_LEFT);
     POCKIT_REFRESH(aj_shown);
 }
 
@@ -472,13 +559,13 @@ static int ajustes_h(int type, int par1, int par2)
     case EVT_POINTERUP: {
         int x = par1, y = par2;
         if (pockit_back_hit(x, y)) { pockit_home(); return 1; }
-        if (y >= data_y - 10 && y < data_y + 200 && nube_linked()) {
+        if (y >= data_y - 10 && y < data_y + data_h && nube_linked()) {
             Dialog3(ICON_QUESTION, "Dropbox", T("Pockit sincroniza tus notas, chats y libros con la carpeta Pockit de tu Dropbox al abrirse y al cerrarse, si hay wifi."),
                     T("Sincronizar ahora"), T("Dejar de sincronizar"), T("Cancelar"), on_data);
             return 1;
         }
-        if (y >= ai_y - 10 && y < ai_y + 140 && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
-        if (y >= ver_y - 10 && y < ver_y + 140) {
+        if (y >= ai_y - 10 && y < ai_y + ai_h && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
+        if (y >= ver_y - 10 && y < ver_y + ver_h) {
             if (new_version[0]) {
                 static char q[300];
                 snprintf(q, sizeof q, T("¿Instalar Pockit %s? Se descarga (menos de 1 MB) y Pockit se cierra para abrir la versión nueva. Tus notas, chats y datos no se tocan."), new_version);
