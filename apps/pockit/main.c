@@ -210,7 +210,7 @@ static void home_sync_tick(void)
     sync_tried = time(NULL);
     sync_status(T("Sincronizando…"));
     char out[400];
-    int ok = nube_sync(0, NULL, out, sizeof out);
+    int ok = nube_sync(0, sync_status, out, sizeof out);   /* un libro tarda: se ve cuál */
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 

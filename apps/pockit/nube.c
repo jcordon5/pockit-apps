@@ -12,6 +12,9 @@
  *    en un solo sitio se copia al otro; si cambió en los dos, se quedan los dos (el de Dropbox como
  *    «nombre (Dropbox).md»). Lo borrado en un sitio se borra en el otro: en Dropbox va a su
  *    papelera y en el lector a system/config/pockit/papelera, así que nada se pierde.
+ *  - Los libros que mandas desde la web llegan igual: van a /Pockit/Biblioteca y se bajan a
+ *    Pockit/Biblioteca, donde la biblioteca del lector los encuentra. Pueden pesar decenas de MB:
+ *    no pasan por la memoria (/tmp es RAM) y se van contando en pantalla.
  */
 #include "inkview.h"
 #include <stdio.h>
@@ -38,7 +41,9 @@
 #define TMP_HDR "/tmp/pk-nube-cabecera.txt"
 #define TMP_BODY "/tmp/pk-nube-peticion.json"
 #define TMP_OUT "/tmp/pk-nube-respuesta"
-#define TMP_FILE "/tmp/pk-nube-archivo"
+#define TMP_FILE "/tmp/pk-nube-archivo"           /* enlace al archivo que se sube: así su nombre no pasa por la shell */
+#define DL_FILE CACHE_DIR "/nube-bajando"           /* lo que se baja, en la memoria del lector y no en RAM */
+#define BIG (512 * 1024)                            /* a partir de aquí se dice qué se está copiando */
 
 #ifdef NUBE_TEST   /* pruebas en el ordenador, contra un Dropbox de mentira */
 static const char *api(void) { return getenv("PK_NUBE_API"); }
@@ -111,13 +116,18 @@ static int copy(const char *a, const char *b)
     return ok;
 }
 
-static int same_content(const char *a, const char *b)
+static int same_content(const char *a, const char *b)   /* a trozos: pueden ser libros */
 {
-    long na, nb;
-    char *x = slurp(a, &na), *y = slurp(b, &nb);
-    int same = x && y && na == nb && !memcmp(x, y, na);
-    free(x);
-    free(y);
+    FILE *x = fopen(a, "rb"), *y = fopen(b, "rb");
+    int same = x && y;
+    char p[8192], q[8192];
+    while (same) {
+        size_t n = fread(p, 1, sizeof p, x), m = fread(q, 1, sizeof q, y);
+        if (n != m || memcmp(p, q, n)) same = 0;
+        if (!n) break;
+    }
+    if (x) fclose(x);
+    if (y) fclose(y);
     return same;
 }
 
@@ -146,9 +156,11 @@ static int dbx_http(const char *url, const char *headers, const char *data_file,
     if (!h) return -1;
     fputs(headers, h);
     fclose(h);
+    /* un libro puede tardar minutos: se corta solo si se queda parado, no por tardar */
+    const char *limit = strstr(url, "/files/upload") || strstr(url, "/files/download") ? "-m 1800 --speed-limit 256 --speed-time 60" : "-m 90";
     char cmd[900];
-    snprintf(cmd, sizeof cmd, "curl -s -m 90 -o '%s' -w '%%{http_code}' -H @" TMP_HDR " %s%s%s -X POST '%s'",
-             out, data_file ? (binary ? "--data-binary @'" : "-d @'") : "", data_file ? data_file : "", data_file ? "'" : "", url);
+    snprintf(cmd, sizeof cmd, "curl -s %s -o '%s' -w '%%{http_code}' -H @" TMP_HDR " %s%s%s -X POST '%s'",
+             limit, out, data_file ? (binary ? "--data-binary @'" : "-d @'") : "", data_file ? data_file : "", data_file ? "'" : "", url);
     FILE *p = popen(cmd, "r");
     if (!p) { remove(TMP_HDR); return -1; }
     char code[16] = "";
@@ -338,7 +350,8 @@ static int upload(Item *it, const char *rev)
 {
     char path[900];
     local_path(path, sizeof path, it->rel);
-    if (!copy(path, TMP_FILE)) return 0;   /* una copia: el nombre no pasa por la shell */
+    remove(TMP_FILE);
+    if (symlink(path, TMP_FILE) && !copy(path, TMP_FILE)) return 0;
     struct stat st;
     stat(path, &st);
     char when[40];
@@ -395,17 +408,22 @@ static int download(Item *it, const char *to)
     jb_cat(&a, "}\n");
     char url[200];
     snprintf(url, sizeof url, "%s/2/files/download", content());
-    int code = dbx_http(url, a.s, NULL, 0, TMP_FILE);
+    mkdir(CACHE_DIR, 0755);
+    int code = dbx_http(url, a.s, NULL, 0, DL_FILE);
     free(a.s);
-    if (code != 200) { remove(TMP_FILE); return 0; }
+    if (code != 200) { remove(DL_FILE); return 0; }
     char path[900];
     local_path(path, sizeof path, to);
     mkdirs(path);
-    char tmp[920];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    int ok = copy(TMP_FILE, tmp) && !rename(tmp, path);
-    remove(TMP_FILE);
-    if (!ok) { remove(tmp); return 0; }
+    int ok = !rename(DL_FILE, path);   /* misma tarjeta: se cambia de sitio sin copiarlo */
+    if (!ok) {
+        char tmp[920];
+        snprintf(tmp, sizeof tmp, "%s.tmp", path);
+        ok = copy(DL_FILE, tmp) && !rename(tmp, path);
+        if (!ok) remove(tmp);
+    }
+    remove(DL_FILE);
+    if (!ok) return 0;
     if (it->rmod > 0) { struct utimbuf u = { it->rmod, it->rmod }; utime(path, &u); }   /* la hora en que se escribió, no la de bajarlo */
     return 1;
 }
@@ -553,7 +571,11 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
         Item *it = &items[i];
         int lchg = changed_here(it), rchg = it->r && (!it->s || strcmp(it->rrev, it->srev));
         if (!(lchg || rchg || (it->s && (!it->l || !it->r)))) continue;
-        if (progress && total > 2) { char m[80]; snprintf(m, sizeof m, T("Sincronizando con Dropbox… %d de %d"), ++done, total); progress(m); }
+        ++done;
+        const char *name = strrchr(it->rel, '/') ? strrchr(it->rel, '/') + 1 : it->rel;
+        int big_down = it->r && it->rsize > BIG && rchg && !(it->s && !it->l), big_up = it->l && it->lsize > BIG && lchg;
+        if (progress && (big_down || big_up)) { char m[600]; snprintf(m, sizeof m, big_down ? T("Bajando «%s»…") : T("Subiendo «%s»…"), name); progress(m); }
+        else if (progress && total > 2) { char m[80]; snprintf(m, sizeof m, T("Sincronizando con Dropbox… %d de %d"), done, total); progress(m); }
         if (it->l && it->r) {
             if (lchg && !rchg) { if (upload(it, it->srev)) up++; else failed++; }
             else if (!lchg && rchg) { if (download(it, it->rel)) { record_download(it); down++; } else failed++; }
