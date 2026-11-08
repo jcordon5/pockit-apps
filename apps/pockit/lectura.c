@@ -1120,6 +1120,7 @@ static void draw_libros(void)
 static char act_name[300], act_title[300];
 static void reload_all(void);
 static void busy(const char *msg);
+static void bib_log(const char *fmt, const char *a, int n);
 static void draw(void);
 
 static void open_file(const char *name)
@@ -1127,7 +1128,11 @@ static void open_file(const char *name)
     char p[1100];
     shelf_local(name, p, sizeof p);
 #ifndef EMULATOR
-    OpenBook(p, "", 0);   /* al abrirlo, el lector lo apunta en su biblioteca */
+    const char *h = GetFileHandler(p);
+    int rc = OpenBook(p, NULL, 0);   /* al abrirlo, el lector lo apunta en su biblioteca */
+    char line[1300];
+    snprintf(line, sizeof line, "abrir %s (con %s): ", p, h ? h : "?");
+    bib_log("%s%d", line, rc);
 #endif
 }
 
@@ -1205,7 +1210,16 @@ static void on_option(int button)
     }
 }
 
-static void file_options(const char *name, const char *title)
+static imenu fmenu[6];
+static char fmenu_head[340];
+static void on_menu(int index)
+{
+    if (index >= 1 && index <= 4) on_option(index);
+    else draw();   /* tocar fuera del menú: nada */
+}
+
+/* Un menú junto al libro: se cierra tocando fuera, sin tener que elegir nada. */
+static void file_options(const char *name, const char *title, int x, int y)
 {
     snprintf(act_name, sizeof act_name, "%s", name);
     snprintf(act_title, sizeof act_title, "%s", title);
@@ -1214,12 +1228,13 @@ static void file_options(const char *name, const char *title)
     nopt = 0;
     opt_kind[nopt++] = here ? O_OPEN : O_GET;
     if (here) opt_kind[nopt++] = O_REMOVE;
-    if (cloud && nopt < 3) opt_kind[nopt++] = O_DELETE;
-    if (nopt < 3) opt_kind[nopt++] = O_CANCEL;
-    char msg[600];
-    snprintf(msg, sizeof msg, "%s\n\n%s", title,
-             here && cloud ? T("En este lector y en tu Dropbox.") : here ? T("Solo en este lector.") : T("En tu Dropbox, sin descargar."));
-    Dialog3(ICON_QUESTION, T("Libro"), msg, T(LBL[opt_kind[0]]), T(LBL[opt_kind[1]]), T(LBL[opt_kind[2]]), on_option);
+    if (cloud) opt_kind[nopt++] = O_DELETE;
+    snprintf(fmenu_head, sizeof fmenu_head, "%s", here && cloud ? T("En este lector y en tu Dropbox") : here ? T("Solo en este lector") : T("En tu Dropbox, sin descargar"));
+    int k = 0;
+    fmenu[k++] = (imenu){ ITEM_HEADER, 0, fmenu_head, NULL };
+    for (int i = 0; i < nopt; i++) fmenu[k++] = (imenu){ ITEM_ACTIVE, (short)(i + 1), (char *)T(LBL[opt_kind[i]]), NULL };
+    fmenu[k] = (imenu){ 0, 0, NULL, NULL };
+    OpenMenu(fmenu, 0, x < W / 2 ? x : W / 2, y, on_menu);
 }
 
 /* Lista de subrayados o palabras con alto variable. book: solo los de ese libro (o NULL).
@@ -1957,7 +1972,7 @@ static void draw_detail(void)
 static void detail_tap(int x, int y)
 {
     Book *fb = &books[detail];
-    if (fb->shelf && y >= 276 && y < D_TABS_Y - 4 && x >= M + 160 && (in_shelf(fb->shelf) || !fb->gone)) { file_options(fb->shelf, fb->title); return; }
+    if (fb->shelf && y >= 276 && y < D_TABS_Y - 4 && x >= M + 160 && (in_shelf(fb->shelf) || !fb->gone)) { file_options(fb->shelf, fb->title, x, y); return; }
     if (y >= D_TABS_Y && y < D_TABS_Y + 70) {
         int t = (x - M) / ((W - 2 * M) / D_COUNT);
         if (t >= 0 && t < D_COUNT && t != dtab) { dtab = t; detail_page = 0; draw(); }
@@ -2074,7 +2089,7 @@ static void tap(int x, int y)
             char title[300];
             NubeBook *nb = &shelf[cloud_rows[i]];
             pretty_name(nb->name, title, sizeof title);
-            file_options(nb->name, title);
+            file_options(nb->name, title, x, y);
         } else if (i - ncloud < nbooks) open_detail(i - ncloud);
         break;
     }
@@ -2220,7 +2235,8 @@ static void run_scanner(int wait)
 #ifndef EMULATOR
     const char *fw = GetSoftwareVersion();
     bib_log("firmware %s: se pasa el buscador del lector", fw ? fw : "?", 0);
-    char cmd[1600];
+    char cmd[1900], secs[300] = "";
+    for (int i = 1; i <= 90; i++) snprintf(secs + strlen(secs), sizeof secs - strlen(secs), "%d ", i);   /* la shell del lector no sabe sumar */
     /* todo lo que diga la shell va al registro: si algo falla, se ve por qué */
     snprintf(cmd, sizeof cmd,
         "exec >>'" BIB_LOG "' 2>&1 </dev/null; "
@@ -2228,11 +2244,11 @@ static void run_scanner(int wait)
         "[ -x $S ] || { echo '  no hay scanner.app'; exit 0; }; "
         "echo \"  buscador: $S\"; "
         "R=; %s"
-        "$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; r=tiempo; "
-        "while [ $i -lt 90 ]; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && { r=ok; break; }; "
-        "kill -0 $P 2>/dev/null || { r=salio; break; }; i=$((i+1)); done; kill $P 2>/dev/null; "
+        "$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; r=tiempo; "
+        "for i in %s; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && { r=ok; break; }; "
+        "kill -0 $P 2>/dev/null || { r=salio; break; }; done; kill $P 2>/dev/null; "
         "echo \"  buscador: $r en $i s; $(tail -c 300 /tmp/pk-scan.log | tr \"\\n\" \" \")\"' $S%s",
-        wait ? "" : "command -v setsid >/dev/null 2>&1 && R=setsid; ", wait ? "" : " &");
+        wait ? "" : "command -v setsid >/dev/null 2>&1 && R=setsid; ", secs, wait ? "" : " &");
     int rc = system(cmd);
     bib_log("  system() = %s%d", "", rc);
 #else

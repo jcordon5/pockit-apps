@@ -228,6 +228,8 @@
 { "Solo en el lector", "Only on the reader" },
 { "No se pudo bajar de Dropbox. Prueba otra vez con la wifi encendida.", "Couldn't download from Dropbox. Try again with Wi-Fi on." },
 { "Dropbox no dejó borrarlo. Prueba otra vez.", "Dropbox didn't let it be deleted. Try again." },
+{ "En este lector y en tu Dropbox", "On this reader and in your Dropbox" },
+{ "En tu Dropbox, sin descargar", "In your Dropbox, not downloaded" },
 { "No se pudo descargar la actualización. Pockit sigue como estaba.", "Couldn't download the update. Pockit is unchanged." },
 { "No se pudo deshacer: la copia ya no está.", "Couldn't undo: the backup is gone." },
 { "No se pudo guardar «%.40s»", "Couldn't save “%.40s”" },
