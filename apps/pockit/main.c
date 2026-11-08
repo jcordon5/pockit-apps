@@ -195,10 +195,13 @@ static void draw_home(void)
  * web y sube lo que cambió aquí. No espera a nada: el Inicio ya está pintado. */
 static long sync_tried;
 /* lo que llegó: los libros, a la biblioteca del lector; los subrayados de otros lectores, a subrayados.md */
-static void after_sync(void)
+static void after_sync(void (*progress)(const char *msg))
 {
-    pockit_books_missing(1);
     pockit_marks_merge();
+    if (pockit_books_index(progress)) {   /* el buscador del lector pinta encima: se repinta todo */
+        if (cur == MOD_HOME) draw_home(); else HANDLERS[cur](EVT_SHOW, 0, 0);
+        FullUpdate();
+    }
 }
 static void sync_status(const char *msg)
 {
@@ -217,7 +220,7 @@ static void home_sync_tick(void)
     sync_status(T("Sincronizando…"));
     char out[400];
     int ok = nube_sync(0, sync_status, out, sizeof out);   /* un libro tarda: se ve cuál */
-    after_sync();
+    after_sync(sync_status);
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 
@@ -411,7 +414,7 @@ static void on_data(int button)
         sync_progress(T("Sincronizando con Dropbox…"));
         char out[400];
         nube_sync(1, sync_progress, out, sizeof out);
-        after_sync();
+        after_sync(sync_progress);
         draw_ajustes();
         Message(ICON_INFORMATION, "Dropbox", out, 3500);
         return;

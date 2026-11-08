@@ -1942,13 +1942,31 @@ static int handler(int type, int par1, int par2)
 
 /* ---------- que la biblioteca del lector vea los libros que baja Pockit ----------
  * La sincronización deja los libros en Pockit/Biblioteca, pero la biblioteca del lector solo busca
- * libros nuevos al desconectar el cable o al reiniciar. BookReady() le avisa de cada uno (en el
- * firmware 6.11 basta, en el 6.8 no); si al cerrar Pockit sigue faltando alguno, se pasa el buscador
- * de libros del propio lector (scanner.app), como hace él al desconectar el cable. */
+ * libros nuevos al encenderse o al desconectar el cable. BookReady() le avisa de cada uno (en el
+ * firmware 6.11 basta; en el 6.10 del Verse, no). Si a los pocos segundos sigue sin tenerlos, Pockit
+ * pasa el buscador de libros del propio lector (scanner.app), como hace él al desconectar el cable,
+ * y lo para en cuanto dice «Scan finished» (si no, se queda abierto).
+ * Lo que pasa queda en system/config/pockit/biblioteca.log, para ver por cable qué falló. */
 #define BIBLIOTECA FLASHDIR "/Pockit/Biblioteca"
+#define BIB_LOG FLASHDIR "/system/config/pockit/biblioteca.log"
 #define MAX_TOLD 64
 static char told[MAX_TOLD][300];
 static int ntold;
+
+static void bib_log(const char *fmt, const char *a, int n)
+{
+    struct stat sb;
+    if (!stat(BIB_LOG, &sb) && sb.st_size > 40000) remove(BIB_LOG);   /* que no crezca */
+    FILE *f = fopen(BIB_LOG, "a");
+    if (!f) return;
+    char when[32];
+    time_t t = time(NULL);
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&t));
+    fprintf(f, "%s  ", when);
+    fprintf(f, fmt, a ? a : "", n);
+    fprintf(f, "\n");
+    fclose(f);
+}
 
 static int in_library(sqlite3 *lib, const char *folder, const char *fn)
 {
@@ -1961,7 +1979,8 @@ static int in_library(sqlite3 *lib, const char *folder, const char *fn)
     return found;
 }
 
-static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int notify, int depth)
+/* cuenta los que faltan; con notify avisa de los nuevos (y los cuenta en *fresh) */
+static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int notify, int *fresh, int depth)
 {
     DIR *d = opendir(dir);
     if (!d) return 0;
@@ -1974,7 +1993,7 @@ static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int noti
         snprintf(dbpath, sizeof dbpath, "%s/%s", dbdir, e->d_name);
         struct stat sb;
         if (stat(path, &sb)) continue;
-        if (S_ISDIR(sb.st_mode)) { if (depth < 4) n += missing_in(lib, path, dbpath, notify, depth + 1); continue; }
+        if (S_ISDIR(sb.st_mode)) { if (depth < 4) n += missing_in(lib, path, dbpath, notify, fresh, depth + 1); continue; }
         if (!is_book(e->d_name) || in_library(lib, dbdir, e->d_name)) continue;
         n++;
         if (!notify) continue;
@@ -1982,6 +2001,8 @@ static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int noti
         while (i < ntold && strcmp(told[i], dbpath)) i++;
         if (i < ntold) continue;   /* ya avisado en esta sesión */
         if (ntold < MAX_TOLD) snprintf(told[ntold++], sizeof told[0], "%s", dbpath);
+        if (fresh) (*fresh)++;
+        bib_log("falta en la biblioteca: %s", dbpath, 0);
 #ifndef EMULATOR
         BookReady(path);
 #endif
@@ -1990,32 +2011,62 @@ static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int noti
     return n;
 }
 
-/* Cuántos libros de Pockit/Biblioteca no están aún en la biblioteca del lector (y, con notify, se le avisa). */
-int pockit_books_missing(int notify)
+static int books_missing(int notify, int *fresh)
 {
     struct stat sb;
     if (stat(BIBLIOTECA, &sb) || !load_sqlite()) return 0;
     sqlite3 *lib = NULL;
     if (db_open(EXPLORER, &lib, SQLITE_OPEN_READONLY, NULL)) { if (lib) db_close(lib); return 0; }
-    int n = missing_in(lib, BIBLIOTECA, "/mnt/ext1/Pockit/Biblioteca", notify, 0);
+    int n = missing_in(lib, BIBLIOTECA, "/mnt/ext1/Pockit/Biblioteca", notify, fresh, 0);
     db_close(lib);
     return n;
 }
+int pockit_books_missing(int notify) { return books_missing(notify, NULL); }
 
-/* Al cerrar Pockit: si falta alguno, el buscador del lector, aparte (sigue aunque Pockit se cierre) y
- * parado en cuanto dice «Scan finished», que si no se queda abierto. Una vez por sesión. */
+/* El buscador del lector, esperando a que acabe (como mucho 90 s). wait=0: aparte, sin esperar. */
+static void run_scanner(int wait)
+{
+#ifndef EMULATOR
+    const char *fw = GetSoftwareVersion();
+    bib_log("firmware %s: se pasa el buscador del lector", fw ? fw : "?", 0);
+    char cmd[1400];
+    snprintf(cmd, sizeof cmd,
+        "S=/ebrmain/bin/scanner.app; [ -x $S ] || S=/ebrmain/cramfs/bin/scanner.app; "
+        "[ -x $S ] || { echo 'no hay scanner.app' >> '" BIB_LOG "'; exit 0; }; "
+        "R=; command -v setsid >/dev/null 2>&1 && R=setsid; "
+        "%s$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; r=tiempo; "
+        "while [ $i -lt 90 ]; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && { r=ok; break; }; "
+        "kill -0 $P 2>/dev/null || { r=salio; break; }; i=$((i+1)); done; kill $P 2>/dev/null; "
+        "echo \"  buscador: $r en $i s; $(tail -c 300 /tmp/pk-scan.log | tr \"\\n\" \" \")\" >> \"$1\"' $S '" BIB_LOG "' </dev/null >/dev/null 2>&1%s",
+        wait ? "" : "", wait ? "" : " &");
+    system(cmd);
+#else
+    (void)wait;
+#endif
+}
+
+/* Tras sincronizar: avisa de los libros nuevos y, si el aviso no basta, pasa el buscador.
+ * Devuelve 1 si se pasó el buscador (la pantalla hay que repintarla). */
+int pockit_books_index(void (*progress)(const char *msg))
+{
+    int fresh = 0;
+    int n = books_missing(1, &fresh);
+    if (!n || !fresh) return 0;   /* nada nuevo (si ya se intentó, al cerrar Pockit otra vez) */
+    for (int i = 0; i < 6 && n; i++) { usleep(500000); n = books_missing(0, NULL); }   /* a ver si con el aviso basta */
+    bib_log("tras el aviso faltan %s%d", "", n);
+    if (!n) return 0;
+    if (progress) progress(T("Añadiendo a la biblioteca del lector…"));
+    run_scanner(1);
+    n = books_missing(0, NULL);
+    bib_log("tras el buscador faltan %s%d", "", n);
+    return 1;
+}
+
+/* Al cerrar Pockit: si aún falta alguno, el buscador otra vez, aparte (sigue aunque Pockit se cierre). */
 void pockit_books_scan(void)
 {
-    static int done;
-    if (done || !pockit_books_missing(0)) return;
-    done = 1;
-#ifndef EMULATOR
-    system("S=/ebrmain/bin/scanner.app; [ -x $S ] || S=/ebrmain/cramfs/bin/scanner.app; [ -x $S ] || exit 0; "
-           "R=; command -v setsid >/dev/null 2>&1 && R=setsid; "
-           "$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; "
-           "while [ $i -lt 120 ]; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && break; "
-           "kill -0 $P 2>/dev/null || exit 0; i=$((i+1)); done; kill $P 2>/dev/null' $S </dev/null >/dev/null 2>&1 &");
-#endif
+    if (!pockit_books_missing(0)) return;
+    run_scanner(0);
 }
 
 void lectura_args(int argc, char *argv[])
