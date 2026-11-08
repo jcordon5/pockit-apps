@@ -1059,23 +1059,122 @@ static void mb(long size, char *out, size_t n)
     if (!pockit_en()) for (char *p = out; *p; p++) if (*p == '.') *p = ',';
 }
 
-static int libros_rows(void) { return (H - TABS_H - PAGER_H - TOP) / BOOK_ROW; }
+/* Filtros y búsqueda, encima de la lista: «Todos · Leyendo · Terminados · En Dropbox    Buscar» */
+enum { LF_ALL, LF_READING, LF_DONE, LF_CLOUD, LF_COUNT };
+static const char *LF_NAMES[] = { "Todos", "Leyendo", "Terminados", "En Dropbox" };
+static int lfilter;
+static char lquery[120], lquery_kbd[120];
+#define LIB_BAR 80
+#define LIB_TOP (TOP + LIB_BAR)
+static int lchip_x[LF_COUNT + 1], lchip_w[LF_COUNT + 1];   /* el último: buscar */
+static int lrows[MAX_SHELF + MAX_BOOKS], nlrows;           /* >= 0 libro; < 0 de Dropbox: -(k + 1) en cloud_rows */
+
+static int libros_rows(void) { return (H - TABS_H - PAGER_H - LIB_TOP) / BOOK_ROW; }
+
+static int matches(const char *a, const char *b)
+{
+    if (!lquery[0]) return 1;
+    char q[200], t[700];
+    pockit_fold(lquery, q, sizeof q);
+    pockit_fold(a ? a : "", t, sizeof t);
+    if (strstr(t, q)) return 1;
+    pockit_fold(b ? b : "", t, sizeof t);
+    return strstr(t, q) != NULL;
+}
+
+static void build_lib_rows(void)
+{
+    nlrows = 0;
+    for (int k = 0; k < ncloud; k++) {
+        NubeBook *nb = &shelf[cloud_rows[k]];
+        char title[300];
+        pretty_name(nb->name, title, sizeof title);
+        int ok = lfilter == LF_ALL || (lfilter == LF_CLOUD && !shelf_here(nb->name));
+        if (ok && matches(title, nb->name)) lrows[nlrows++] = -(k + 1);
+    }
+    for (int i = 0; i < nbooks; i++) {
+        Book *b = &books[i];
+        int ok = lfilter == LF_ALL
+              || (lfilter == LF_READING && !b->gone && !b->done && b->progress > 0)
+              || (lfilter == LF_DONE && b->done)
+              || (lfilter == LF_CLOUD && b->gone && in_shelf(b->shelf));
+        if (ok && matches(b->title, b->author)) lrows[nlrows++] = i;
+    }
+}
+
+/* un recuadro con texto: los filtros y los botones de las filas */
+static void pill(int x, int y, int w, int h, const char *text, int on)
+{
+    if (on) FillArea(x, y, w, h, BLACK);
+    else { DrawRect(x, y, w, h, BLACK); DrawRect(x + 1, y + 1, w - 2, h - 2, BLACK); }
+    SetFont(f_small, on ? WHITE : BLACK);
+    DrawTextRect(x, y, w, h, text, ALIGN_CENTER | VALIGN_MIDDLE | DOTS);
+}
+
+static void draw_lib_bar(void)
+{
+    /* buscar: arriba a la derecha, junto al título */
+    char search[160];
+    SetFont(f_small, BLACK);
+    if (lquery[0]) snprintf(search, sizeof search, "«%s»  ×", lquery); else snprintf(search, sizeof search, "%s", T("Buscar"));
+    int ws = StringWidth(search) + 48;
+    if (ws < 170) ws = 170;
+    if (ws > (W - 2 * M) / 2) ws = (W - 2 * M) / 2;
+    lchip_x[LF_COUNT] = W - M - ws; lchip_w[LF_COUNT] = ws;
+    pill(W - M - ws, 104, ws, 62, search, lquery[0] != 0);
+    /* filtros: todos del mismo ancho; si el texto no cabe, letra menor */
+    int y = TOP + 2, h = 56, gap = 12, w = (W - 2 * M - gap * (LF_COUNT - 1)) / LF_COUNT;
+    for (int i = 0; i < LF_COUNT; i++) {
+        int x = M + i * (w + gap), on = i == lfilter;
+        lchip_x[i] = x; lchip_w[i] = w;
+        if (on) FillArea(x, y, w, h, BLACK);
+        else { DrawRect(x, y, w, h, BLACK); DrawRect(x + 1, y + 1, w - 2, h - 2, BLACK); }
+        fit_font(f_small, f_tiny, on ? WHITE : BLACK, T(LF_NAMES[i]), w - 16);
+        DrawTextRect(x, y, w, h, T(LF_NAMES[i]), ALIGN_CENTER | VALIGN_MIDDLE | DOTS);
+    }
+}
+
+static void draw(void);
+static void on_search(char *text)
+{
+    snprintf(lquery, sizeof lquery, "%s", text ? text : "");
+    page_of[LIBROS] = 0;
+    draw();
+}
+
+/* triángulo hacia abajo: «aquí se despliega algo» */
+static void caret(int x, int y, int s)
+{
+    for (int i = 0; i < s; i++) DrawLine(x + i, y + i, x + 2 * s - i, y + i, BLACK);
+}
+
+/* El botón de las acciones del archivo: dice dónde está el libro y se despliega al tocarlo */
+static void file_button(int x, int y, int w, int h, const char *text)
+{
+    DrawRect(x, y, w, h, BLACK);
+    DrawRect(x + 1, y + 1, w - 2, h - 2, BLACK);
+    SetFont(f_small, BLACK);
+    DrawTextRect(x + 18, y, w - 64, h, text, ALIGN_LEFT | VALIGN_MIDDLE | DOTS);
+    caret(x + w - 40, y + h / 2 - 5, 11);
+}
 
 static void draw_libros(void)
 {
     if (!shelf_loaded) load_shelf();
-    int total = ncloud + nbooks;
+    build_lib_rows();
     char sub[120];
     if (ncloud) snprintf(sub, sizeof sub, T("%d en el lector y %d en tu Dropbox. Toca uno para verlo."), nbooks, ncloud);
     else snprintf(sub, sizeof sub, T("%d libros, del último abierto al primero. Toca uno para verlo."), nbooks);
     header(T("Libros"), sub);
+    draw_lib_bar();
     int per = libros_rows(), from = page_of[LIBROS] * per;
-    int y = TOP;
-    for (int r = from; r < total && r < from + per; r++, y += BOOK_ROW) {
+    int y = LIB_TOP;
+    if (!nlrows) { SetFont(f_body, SOFT); DrawTextRect(M, y + 20, W - 2 * M, 100, lquery[0] ? T("Ningún libro coincide con tu búsqueda.") : T("Aquí no hay ningún libro."), ALIGN_LEFT); }
+    for (int r = from; r < nlrows && r < from + per; r++, y += BOOK_ROW) {
         int tx = M + 140, tw = W - M - tx;
         char info[200], when[40];
-        if (r < ncloud) {   /* de tu Dropbox, aún no en la biblioteca */
-            NubeBook *nb = &shelf[cloud_rows[r]];
+        if (lrows[r] < 0) {   /* de tu Dropbox, aún no en la biblioteca */
+            NubeBook *nb = &shelf[cloud_rows[-lrows[r] - 1]];
             char title[300], size[24];
             pretty_name(nb->name, title, sizeof title);
             Book tmp = { 0 };
@@ -1087,12 +1186,11 @@ static void draw_libros(void)
             mb(nb->size, size, sizeof size);
             SetFont(f_small, SOFT);
             DrawTextRect(tx, y + 50, tw, 40, size, ALIGN_LEFT | DOTS);
-            SetFont(f_body, BLACK);
-            DrawTextRect(tx, y + 116, tw, 44, shelf_here(nb->name) ? T("Descargado") : T("En Dropbox  ·  toca para descargarlo"), ALIGN_LEFT | DOTS);
+            file_button(tx, y + 104, tw < 520 ? tw : 520, 58, shelf_here(nb->name) ? T("Descargado") : T("En Dropbox, sin descargar"));
             DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
             continue;
         }
-        Book *b = &books[r - ncloud];
+        Book *b = &books[lrows[r]];
         cover(b, M, y, 110, 165);
         SetFont(f_bold, BLACK);
         DrawTextRect(tx, y, tw, 50, b->title, ALIGN_LEFT | DOTS);
@@ -1111,7 +1209,7 @@ static void draw_libros(void)
         DrawTextRect(tx, y + 126, tw, 40, info, ALIGN_LEFT | DOTS);
         DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
     }
-    int pages = (total + per - 1) / per;
+    int pages = (nlrows + per - 1) / per;
     last_page_end = page_of[LIBROS] + 1 >= pages;
     pager(page_of[LIBROS], pages ? pages : 1);
 }
@@ -1930,14 +2028,15 @@ static void draw_detail(void)
     if (!shelf_loaded) load_shelf();
     int cloud = in_shelf(b->shelf);
     if (b->shelf && (cloud || !b->gone))   /* su archivo: dónde está, y qué hacer con él */
-        snprintf(l2, sizeof l2, "%s  ›", !b->gone && cloud ? T("En el lector y en Dropbox") : !b->gone ? T("Solo en el lector") : T("En Dropbox, sin descargar"));
+        snprintf(l2, sizeof l2, "%s", !b->gone && cloud ? T("En el lector y en Dropbox") : !b->gone ? T("Solo en el lector") : T("En Dropbox, sin descargar"));
     else if (b->gone) snprintf(l2, sizeof l2, T("Ya no está en el lector"));
     else if (b->opened) { ago(b->opened, d, sizeof d); snprintf(l2, sizeof l2, T("Leído por última vez %s"), d); }
     else l2[0] = 0;
     if (b->progress > 0) bar(tx, 262, tw, 12, b->done ? 1 : b->progress);
     SetFont(f_small, SOFT);
     DrawTextRect(tx, 284, tw, 36, l1, ALIGN_LEFT | DOTS);
-    if (l2[0]) DrawTextRect(tx, 320, tw, 36, l2, ALIGN_LEFT | DOTS);
+    if (b->shelf && (cloud || !b->gone)) file_button(tx, 312, tw < 520 ? tw : 520, 46, l2);   /* se despliega: descargar, quitar, borrar */
+    else if (l2[0]) DrawTextRect(tx, 320, tw, 36, l2, ALIGN_LEFT | DOTS);
     /* pestañas */
     int segw = (W - 2 * M) / D_COUNT;
     for (int i = 0; i < D_COUNT; i++) {
@@ -2068,14 +2167,27 @@ static void tap(int x, int y)
         break;
     }
     case LIBROS: {
-        int k = (y - TOP) / BOOK_ROW, i = page_of[LIBROS] * libros_rows() + k;
-        if (y < TOP || k >= libros_rows()) break;
-        if (i < ncloud) {
+        if (y >= TOP - 8 && y < LIB_TOP) {   /* filtros */
+            for (int i = 0; i < LF_COUNT; i++)
+                if (x >= lchip_x[i] && x < lchip_x[i] + lchip_w[i]) { lfilter = i; page_of[LIBROS] = 0; draw(); return; }
+            break;
+        }
+        if (y >= 94 && y < 180) {   /* buscar */
+            if (x >= lchip_x[LF_COUNT]) {
+                if (lquery[0]) { lquery[0] = 0; page_of[LIBROS] = 0; draw(); }
+                else { lquery_kbd[0] = 0; OpenKeyboard(T("Buscar un libro"), lquery_kbd, sizeof lquery_kbd - 1, KBD_NORMAL | KBD_NOEVTSHOW, on_search); }
+            }
+            break;
+        }
+        int k = (y - LIB_TOP) / BOOK_ROW, r = page_of[LIBROS] * libros_rows() + k;
+        build_lib_rows();
+        if (y < LIB_TOP || k >= libros_rows() || r >= nlrows) break;
+        if (lrows[r] < 0) {
             char title[300];
-            NubeBook *nb = &shelf[cloud_rows[i]];
+            NubeBook *nb = &shelf[cloud_rows[-lrows[r] - 1]];
             pretty_name(nb->name, title, sizeof title);
             file_options(nb->name, title, x, y);
-        } else if (i - ncloud < nbooks) open_detail(i - ncloud);
+        } else open_detail(lrows[r]);
         break;
     }
     case PALABRAS:
