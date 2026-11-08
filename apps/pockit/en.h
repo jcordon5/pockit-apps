@@ -203,6 +203,7 @@
 { "No se pudo consultar Wikipedia", "Couldn't look up Wikipedia" },
 { "No se pudo consultar el libro", "Couldn't look at the book" },
 { "No se pudo crear la nota", "Couldn't create the note" },
+{ "La versión nueva aún no está lista para descargar. Prueba dentro de un rato; Pockit sigue como estaba.", "The new version isn't ready to download yet. Try again in a while; Pockit is unchanged." },
 { "No se pudo descargar la actualización. Pockit sigue como estaba.", "Couldn't download the update. Pockit is unchanged." },
 { "No se pudo deshacer: la copia ya no está.", "Couldn't undo: the backup is gone." },
 { "No se pudo guardar «%.40s»", "Couldn't save “%.40s”" },

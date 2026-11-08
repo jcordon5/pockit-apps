@@ -28,5 +28,10 @@ jobs:
           git add -A
           git commit -q -m "Apps compiladas de ${GITHUB_SHA::7}"
           git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" dist
+      # Todos los archivos, no solo el catálogo: si no, jsDelivr sigue dando el programa viejo hasta 12 h
       - name: Refrescar la caché de jsDelivr
-        run: curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@dist/apps.json" > /dev/null || true
+        run: |
+          cd dist
+          find . -type f ! -path './.git/*' | sed 's|^\./||' | while read -r f; do
+            curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@dist/$f" > /dev/null || true
+          done

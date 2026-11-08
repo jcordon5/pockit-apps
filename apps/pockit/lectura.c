@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "../../common/md.h"
 #include "../../common/ai.h"
 #include "../../common/epub.h"
@@ -73,7 +74,7 @@ typedef struct {
     int gone;          /* ya no está en el lector: sale de su ficha en Libros/<etiqueta>/ */
     double progress;   /* -1 si no se sabe */
 } Book;
-typedef struct { char *text, *note, *book, *extra; long ts; int word; } Mark;
+typedef struct { char *text, *note, *book, *extra; long ts; int word, remote; } Mark;   /* remote: de otro lector, por Dropbox */
 
 static Book books[MAX_BOOKS];
 static int nbooks;
@@ -219,62 +220,350 @@ static void strip_html(char *s)
     while (w > s && (w[-1] == '\n' || w[-1] == ' ')) *--w = 0;
 }
 
-/* Los subrayados y palabras de cada libro, también en Libros/<etiqueta>/subrayados.md: así se
- * ven en la web (Dropbox) sin conectar el lector. Solo se escribe si cambió. */
-static char vstate[MAX_MARKS];   /* por marca: 0 por aprender, 'a' aprendida, 'q' quitada (ver «vocabulario») */
-static void export_marks(void)
+/* ---------- subrayados de todos tus lectores ----------
+ * Cada lector escribe SOLO los suyos en Libros/<etiqueta>/subrayados/<lector>.tsv: un archivo con un
+ * único dueño nunca choca al sincronizar, tengas dos lectores o diez. Libros/<etiqueta>/subrayados.md
+ * (lo que lee la web) se hace juntando todos esos archivos, siempre igual a partir de los mismos datos,
+ * así que todos los lectores llegan al mismo texto. Pockit también enseña los subrayados y palabras
+ * de tus otros lectores (remote).
+ * Líneas del .tsv: «#\t<título>», «m\t<cuándo>\t<texto>\t<nota>» (subrayado),
+ * «w\t<cuándo>\t<palabra>\t<definición>\t<contexto>» y «v\t<estado>\t<palabra>» (aprendida o quitada aquí). */
+static char vstate[MAX_MARKS];   /* por marca: 0 por aprender, 'a' aprendida, 'q' quitada, '-' por aprender a propósito */
+static char rstate[MAX_MARKS];   /* lo mismo, según tus otros lectores */
+
+static const char *lector_id(void)
+{
+    static char id[80];
+    if (id[0]) return id;
+    const char *path = FLASHDIR "/system/config/pockit/lector.txt";
+    FILE *f = fopen(path, "r");
+    if (f) { if (fgets(id, sizeof id, f)) id[strcspn(id, "\r\n")] = 0; fclose(f); }
+    if (id[0]) return id;
+    char raw[80] = "Lector";
+    const char *serial = "";
+#ifndef EMULATOR
+    const char *model = GetDeviceModel();
+    if (model && model[0]) snprintf(raw, sizeof raw, "%s", model);
+    serial = GetSerialNumber();
+    if (!serial) serial = "";
+#endif
+    char tail[8];
+    size_t sl = strlen(serial);
+    if (sl >= 4) snprintf(tail, sizeof tail, "%s", serial + sl - 4);
+    else { srand((unsigned)time(NULL) ^ (unsigned)getpid()); snprintf(tail, sizeof tail, "%04x", rand() & 0xffff); }
+    int o = 0;
+    for (const char *p = raw; *p && o < 50; p++) id[o++] = (*p == '/' || *p == '\\' || *p == ':' || *p == '\t' || *p == '\n') ? '-' : *p;
+    snprintf(id + o, sizeof id - o, " (%s)", tail);
+    mkdir(FLASHDIR "/system/config/pockit", 0755);
+    if ((f = fopen(path, "w"))) { fprintf(f, "%s\n", id); fclose(f); }
+    return id;
+}
+
+static void tsv_put(JBuf *b, const char *s)
+{
+    for (; s && *s; s++) {
+        if (*s == '\t') jb_cat(b, "\\t");
+        else if (*s == '\n') jb_cat(b, "\\n");
+        else if (*s == '\r') continue;
+        else if (*s == '\\') jb_cat(b, "\\\\");
+        else jb_put(b, s, 1);
+    }
+}
+static void tsv_unescape(char *s)
+{
+    char *w = s;
+    for (char *r = s; *r; r++) {
+        if (*r == '\\' && r[1]) { r++; *w++ = *r == 't' ? '\t' : *r == 'n' ? '\n' : *r; }
+        else *w++ = *r;
+    }
+    *w = 0;
+}
+/* Parte una línea en campos (in situ). Devuelve cuántos. */
+static int tsv_split(char *line, char **f, int max)
+{
+    int n = 0;
+    line[strcspn(line, "\r\n")] = 0;
+    for (char *p = line; n < max; ) {
+        f[n++] = p;
+        char *t = strchr(p, '\t');
+        if (!t) break;
+        *t = 0;
+        p = t + 1;
+    }
+    for (int i = 0; i < n; i++) tsv_unescape(f[i]);
+    return n;
+}
+
+/* escribe solo si cambió (para no subir nada a Dropbox sin motivo) */
+static void write_if_changed(const char *p, const JBuf *md)
+{
+    FILE *f = fopen(p, "r");
+    int same = 0;
+    if (f) {
+        char *old = malloc(md->len + 2);
+        size_t r = fread(old, 1, md->len + 1, f);
+        same = r == (size_t)md->len && !memcmp(old, md->s, md->len);
+        free(old);
+        fclose(f);
+    }
+    if (!same && (f = fopen(p, "w"))) { fwrite(md->s, 1, md->len, f); fclose(f); }
+}
+
+static char *slurp(const char *p)
+{
+    FILE *f = fopen(p, "r");
+    if (!f) return NULL;
+    JBuf b = { 0 };
+    char buf[4096];
+    size_t r;
+    while ((r = fread(buf, 1, sizeof buf, f)) > 0) jb_put(&b, buf, r);
+    fclose(f);
+    if (!b.s) b.s = strdup("");
+    return b.s;
+}
+
+/* Lo que hay en subrayados/ de un libro, de todos los lectores */
+typedef struct { char kind; long ts; char *text, *note, *extra; char state; } Entry;
+static int by_entry(const void *a, const void *b)
+{
+    const Entry *x = a, *y = b;
+    if (x->ts != y->ts) return x->ts < y->ts ? -1 : 1;
+    return strcmp(x->text, y->text);
+}
+
+/* Junta los subrayados de todos los lectores de un libro en subrayados.md. */
+static void merge_book(const char *dir)
 {
     static const char *MES_ES[] = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
     static const char *MES_EN[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     const char **MES = pockit_en() ? MES_EN : MES_ES;
-    for (int b = 0; b < nbooks; b++) {
-        Book *bk = &books[b];
-        if (!bk->marks && !bk->words) continue;
-        JBuf md = { 0 };
-        char line[600];
-        snprintf(line, sizeof line, T("# Subrayados de «%s»\n"), bk->title);
-        jb_cat(&md, line);
-        for (int pass = 0; pass < 2; pass++) {
-            int first = 1;
-            for (int i = nmarks - 1; i >= 0; i--) {   /* del más viejo al más nuevo: el orden de lectura */
-                Mark *m = &marks[i];
-                if (m->word != pass || strcmp(m->book, bk->title) || (pass && vstate[i] == 'q')) continue;
-                if (first && pass) jb_cat(&md, T("\n## Palabras\n"));
-                first = 0;
-                struct tm tm;
-                time_t t = m->ts;
-                localtime_r(&t, &tm);
-                if (!pass) {
-                    jb_cat(&md, "\n> ");
-                    for (const char *q = m->text; *q; q++) { if (*q == '\n') jb_cat(&md, "\n> "); else jb_put(&md, q, 1); }
-                    if (m->note && m->note[0]) { jb_cat(&md, "\n\n"); jb_cat(&md, m->note); }
-                    snprintf(line, sizeof line, "\n\n*%d %s %d*\n", tm.tm_mday, MES[tm.tm_mon], tm.tm_year + 1900);
-                    jb_cat(&md, line);
-                } else {
-                    snprintf(line, sizeof line, "\n- **%s**%s: ", m->text, vstate[i] == 'a' ? T(" (aprendida)") : "");
-                    jb_cat(&md, line);
-                    char def[300];
-                    snprintf(def, sizeof def, "%.250s", m->note ? m->note : "");
-                    for (char *q = def; *q; q++) if (*q == '\n') *q = ' ';
-                    jb_cat(&md, def);
-                }
+    char sub[900];
+    snprintf(sub, sizeof sub, "%s/subrayados", dir);
+    DIR *d = opendir(sub);
+    if (!d) return;
+    /* los archivos en orden de nombre: el mismo resultado en todos los lectores */
+    char *names[64];
+    int nn = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && nn < 64) {
+        size_t l = strlen(e->d_name);
+        if (e->d_name[0] != '.' && l > 4 && !strcmp(e->d_name + l - 4, ".tsv")) names[nn++] = strdup(e->d_name);
+    }
+    closedir(d);
+    for (int i = 0; i < nn; i++) for (int j = i + 1; j < nn; j++) if (strcmp(names[j], names[i]) < 0) { char *t = names[i]; names[i] = names[j]; names[j] = t; }
+    static Entry ent[MAX_MARKS];
+    int ne = 0;
+    char title[300] = "";
+    char *bufs[64];
+    int nb = 0, nst = 0;
+    static char sts[MAX_MARKS];
+    static char *stw[MAX_MARKS];
+    for (int i = 0; i < nn; i++) {
+        char p[1100];
+        snprintf(p, sizeof p, "%s/%s", sub, names[i]);
+        char *txt = slurp(p);
+        free(names[i]);
+        if (!txt) continue;
+        bufs[nb++] = txt;
+        for (char *line = txt, *next; line && *line; line = next) {
+            next = strchr(line, '\n');
+            if (next) *next++ = 0;
+            char *f[6];
+            int n = tsv_split(line, f, 6);
+            if (n >= 2 && !strcmp(f[0], "#")) { if (!title[0]) snprintf(title, sizeof title, "%s", f[1]); continue; }
+            if (n >= 3 && !strcmp(f[0], "v")) { if (nst < MAX_MARKS) { sts[nst] = f[1][0]; stw[nst++] = f[2]; } continue; }
+            if (n < 3 || (f[0][0] != 'm' && f[0][0] != 'w') || !f[2][0] || ne >= MAX_MARKS) continue;
+            int dup = 0;
+            for (int k = 0; k < ne && !dup; k++) dup = ent[k].kind == f[0][0] && !strcmp(ent[k].text, f[2]);
+            if (dup) continue;   /* el mismo subrayado en dos lectores */
+            ent[ne++] = (Entry){ f[0][0], atol(f[1]), f[2], n > 3 ? f[3] : "", n > 4 ? f[4] : "", 0 };
+        }
+    }
+    /* estados de las palabras («v»): quitada gana a aprendida */
+    for (int i = 0; i < nst; i++)
+        for (int k = 0; k < ne; k++)
+            if (ent[k].kind == 'w' && !strcmp(ent[k].text, stw[i]) && (sts[i] == 'q' || (sts[i] == 'a' && ent[k].state != 'q'))) ent[k].state = sts[i];
+    char md_path[1000];
+    snprintf(md_path, sizeof md_path, "%s/subrayados.md", dir);
+    if (!ne) { remove(md_path); for (int i = 0; i < nb; i++) free(bufs[i]); return; }
+    qsort(ent, ne, sizeof *ent, by_entry);   /* del más viejo al más nuevo: el orden de lectura */
+    JBuf md = { 0 };
+    char line[600];
+    snprintf(line, sizeof line, T("# Subrayados de «%s»\n"), title);
+    jb_cat(&md, line);
+    for (int pass = 0; pass < 2; pass++) {
+        int first = 1;
+        for (int i = 0; i < ne; i++) {
+            Entry *m = &ent[i];
+            if ((m->kind == 'w') != pass || (pass && m->state == 'q')) continue;
+            if (first && pass) jb_cat(&md, T("\n## Palabras\n"));
+            first = 0;
+            struct tm tm;
+            time_t t = m->ts;
+            localtime_r(&t, &tm);
+            if (!pass) {
+                jb_cat(&md, "\n> ");
+                for (const char *q = m->text; *q; q++) { if (*q == '\n') jb_cat(&md, "\n> "); else jb_put(&md, q, 1); }
+                if (m->note[0]) { jb_cat(&md, "\n\n"); jb_cat(&md, m->note); }
+                snprintf(line, sizeof line, "\n\n*%d %s %d*\n", tm.tm_mday, MES[tm.tm_mon], tm.tm_year + 1900);
+                jb_cat(&md, line);
+            } else {
+                snprintf(line, sizeof line, "\n- **%s**%s: ", m->text, m->state == 'a' ? T(" (aprendida)") : "");
+                jb_cat(&md, line);
+                char def[300];
+                snprintf(def, sizeof def, "%.250s", m->note);
+                for (char *q = def; *q; q++) if (*q == '\n') *q = ' ';
+                jb_cat(&md, def);
             }
         }
-        jb_cat(&md, "\n");
-        char dir[800], p[900];
-        pockit_book_dir(bk->title, dir, sizeof dir);
-        snprintf(p, sizeof p, "%s/subrayados.md", dir);
-        FILE *f = fopen(p, "r");
-        int same = 0;
-        if (f) {
-            char *old = malloc(md.len + 2);
-            size_t r = fread(old, 1, md.len + 1, f);
-            same = r == (size_t)md.len && !memcmp(old, md.s, md.len);
-            free(old);
-            fclose(f);
+    }
+    jb_cat(&md, "\n");
+    write_if_changed(md_path, &md);
+    free(md.s);
+    for (int i = 0; i < nb; i++) free(bufs[i]);
+}
+
+/* Tras sincronizar: rehace subrayados.md de los libros (pueden haber llegado los de otro lector). */
+void pockit_marks_merge(void)
+{
+    char libros[700];
+    pockit_path(libros, sizeof libros, "Libros");
+    DIR *d = opendir(libros);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char dir[1000];
+        snprintf(dir, sizeof dir, "%s/%s", libros, e->d_name);
+        merge_book(dir);
+    }
+    closedir(d);
+}
+
+/* Libros/<etiqueta>/ de un libro, sin crearla */
+static void book_dir_peek(const char *title, char *out, size_t n)
+{
+    char tag[64], libros[700];
+    pockit_tag(title, tag, sizeof tag);
+    pockit_path(libros, sizeof libros, "Libros");
+    snprintf(out, n, "%s/%s", libros, tag);
+}
+
+/* Los subrayados y palabras de ESTE lector, a su archivo de cada libro; luego se junta todo. */
+static void export_marks(void)
+{
+    const char *me = lector_id();
+    for (int b = 0; b < nbooks; b++) {
+        Book *bk = &books[b];
+        char dir[800], sub[900], p[1100];
+        book_dir_peek(bk->title, dir, sizeof dir);
+        snprintf(sub, sizeof sub, "%s/subrayados", dir);
+        snprintf(p, sizeof p, "%s/%s.tsv", sub, me);
+        JBuf t = { 0 };
+        int any = 0;
+        jb_cat(&t, "#\t");
+        tsv_put(&t, bk->title);
+        jb_cat(&t, "\n");
+        for (int i = nmarks - 1; i >= 0; i--) {
+            Mark *m = &marks[i];
+            if (strcmp(m->book, bk->title)) continue;
+            char n[32];
+            if (!m->remote) {
+                snprintf(n, sizeof n, "%c\t%ld\t", m->word ? 'w' : 'm', m->ts);
+                jb_cat(&t, n);
+                tsv_put(&t, m->text);
+                jb_cat(&t, "\t");
+                tsv_put(&t, m->note ? m->note : "");
+                if (m->word) { jb_cat(&t, "\t"); tsv_put(&t, m->extra ? m->extra : ""); }
+                jb_cat(&t, "\n");
+                any = 1;
+            }
+            if (m->word && (vstate[i] == 'a' || vstate[i] == 'q') && vstate[i] != rstate[i]) {   /* lo que se decidió aquí */
+                snprintf(n, sizeof n, "v\t%c\t", vstate[i]);
+                jb_cat(&t, n);
+                tsv_put(&t, m->text);
+                jb_cat(&t, "\n");
+                any = 1;
+            }
         }
-        if (!same && (f = fopen(p, "w"))) { fwrite(md.s, 1, md.len, f); fclose(f); }
-        free(md.s);
+        struct stat sb;
+        if (any) { mkdir(dir, 0755); mkdir(sub, 0755); write_if_changed(p, &t); }
+        else if (!stat(p, &sb)) remove(p);   /* los borraste todos en este lector */
+        free(t.s);
+        /* hasta la 2.6, subrayados.md lo escribía directamente cada lector: es su versión */
+        if (!stat(sub, &sb)) merge_book(dir);
+    }
+}
+
+/* Los de tus otros lectores, para verlos también aquí (solo de los libros que conoce este lector). */
+static void load_remote_marks(void)
+{
+    const char *me = lector_id();
+    for (int b = 0; b < nbooks; b++) {
+        char dir[800], sub[900];
+        book_dir_peek(books[b].title, dir, sizeof dir);
+        snprintf(sub, sizeof sub, "%s/subrayados", dir);
+        DIR *d = opendir(sub);
+        if (!d) continue;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            size_t l = strlen(e->d_name);
+            if (e->d_name[0] == '.' || l < 5 || strcmp(e->d_name + l - 4, ".tsv")) continue;
+            if (!strncmp(e->d_name, me, l - 4) && strlen(me) == l - 4) continue;   /* el mío */
+            char p[1100];
+            snprintf(p, sizeof p, "%s/%s", sub, e->d_name);
+            char *txt = slurp(p);
+            if (!txt) continue;
+            for (char *line = txt, *next; line && *line; line = next) {
+                next = strchr(line, '\n');
+                if (next) *next++ = 0;
+                char *f[6];
+                int n = tsv_split(line, f, 6);
+                if (n < 3 || (f[0][0] != 'm' && f[0][0] != 'w') || !f[2][0] || nmarks >= MAX_MARKS) continue;
+                int word = f[0][0] == 'w', dup = 0;
+                for (int k = 0; k < nmarks && !dup; k++) dup = marks[k].word == word && !strcmp(marks[k].book, books[b].title) && !strcmp(marks[k].text, f[2]);
+                if (dup) continue;
+                Mark *m = &marks[nmarks++];
+                *m = (Mark){ strdup(f[2]), strdup(n > 3 ? f[3] : ""), strdup(books[b].title), word && n > 4 ? strdup(f[4]) : NULL, atol(f[1]), word, 1 };
+                if (word) { nwords++; books[b].words++; } else books[b].marks++;
+            }
+            free(txt);
+        }
+        closedir(d);
+    }
+}
+
+/* Estados de palabras que vienen de tus otros lectores («v»): se aplican tras ordenar las marcas. */
+static void load_remote_states(void)
+{
+    const char *me = lector_id();
+    for (int b = 0; b < nbooks; b++) {
+        char dir[800], sub[900];
+        book_dir_peek(books[b].title, dir, sizeof dir);
+        snprintf(sub, sizeof sub, "%s/subrayados", dir);
+        DIR *d = opendir(sub);
+        if (!d) continue;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            size_t l = strlen(e->d_name);
+            if (e->d_name[0] == '.' || l < 5 || strcmp(e->d_name + l - 4, ".tsv")) continue;
+            if (!strncmp(e->d_name, me, l - 4) && strlen(me) == l - 4) continue;
+            char p[1100];
+            snprintf(p, sizeof p, "%s/%s", sub, e->d_name);
+            char *txt = slurp(p);
+            if (!txt) continue;
+            for (char *line = txt, *next; line && *line; line = next) {
+                next = strchr(line, '\n');
+                if (next) *next++ = 0;
+                char *f[4];
+                if (tsv_split(line, f, 4) < 3 || strcmp(f[0], "v")) continue;
+                for (int i = 0; i < nmarks; i++)
+                    if (marks[i].word && !strcmp(marks[i].book, books[b].title) && !strcmp(marks[i].text, f[2]) && (f[1][0] == 'q' || (f[1][0] == 'a' && rstate[i] != 'q')))
+                        rstate[i] = f[1][0];
+            }
+            free(txt);
+        }
+        closedir(d);
     }
 }
 
@@ -377,6 +666,7 @@ static void load_data(void)
         db_finalize(st);
     }
     db_close(meta);
+    load_remote_marks();
     qsort(marks, nmarks, sizeof *marks, by_ts);
 }
 
@@ -385,6 +675,8 @@ static void load_data(void)
 
 static void load_vocab(void)
 {
+    load_remote_states();
+    for (int i = 0; i < nmarks; i++) vstate[i] = rstate[i];   /* lo de este lector, abajo, manda */
     FILE *f = fopen(VOCAB, "r");
     char buf[600];
     while (f && fgets(buf, sizeof buf, f)) {
@@ -400,8 +692,10 @@ static void save_vocab(void)
 {
     FILE *f = fopen(VOCAB, "w");
     if (!f) return;
-    for (int i = 0; i < nmarks; i++) if (marks[i].word && vstate[i]) fprintf(f, "%c\t%s\n", vstate[i], marks[i].text);
+    for (int i = 0; i < nmarks; i++)   /* lo que viene de otro lector ya está en su archivo */
+        if (marks[i].word && vstate[i] && vstate[i] != rstate[i]) fprintf(f, "%c\t%s\n", vstate[i], marks[i].text);
     fclose(f);
+    export_marks();   /* para que tus otros lectores lo sepan */
 }
 
 /* ---------- actividad: cada cosa que el lector deja con fecha ---------- */
@@ -950,7 +1244,7 @@ static void palabras_tap(int x, int y)
     int idx = vocab_list[card];
     if (b == 0 && card > 0) { card--; card_back = 0; }
     else if (b == 3 && card + 1 < nvocab) { card++; card_back = 0; }
-    else if (b == 1) { vstate[idx] = vfilter ? 0 : 'a'; save_vocab(); card_back = 0; }
+    else if (b == 1) { vstate[idx] = vfilter ? '-' : 'a'; save_vocab(); card_back = 0; }
     else if (b == 2) { vstate[idx] = 'q'; save_vocab(); card_back = 0; }
 }
 

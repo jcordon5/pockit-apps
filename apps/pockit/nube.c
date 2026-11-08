@@ -580,6 +580,13 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
             if (lchg && !rchg) { if (upload(it, it->srev)) up++; else failed++; }
             else if (!lchg && rchg) { if (download(it, it->rel)) { record_download(it); down++; } else failed++; }
             else {
+                /* subrayados.md se hace juntando los archivos de cada lector (subrayados/): si cambió en los
+                 * dos sitios, vale el de Dropbox y, al acabar, se vuelve a juntar con lo que haya llegado */
+                size_t rl = strlen(it->rel);
+                if (rl >= 14 && !strcmp(it->rel + rl - 14, "subrayados.md")) {
+                    if (download(it, it->rel)) { record_download(it); down++; } else failed++;
+                    continue;
+                }
                 /* cambió en los dos sitios (o es la primera vez y están en los dos): si son iguales, nada */
                 char path[900];
                 local_path(path, sizeof path, it->rel);

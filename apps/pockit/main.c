@@ -194,6 +194,12 @@ static void draw_home(void)
 /* Al abrir Pockit y al volver al Inicio, si la wifi ya está encendida: baja lo que cambió en la
  * web y sube lo que cambió aquí. No espera a nada: el Inicio ya está pintado. */
 static long sync_tried;
+/* lo que llegó: los libros, a la biblioteca del lector; los subrayados de otros lectores, a subrayados.md */
+static void after_sync(void)
+{
+    pockit_books_missing(1);
+    pockit_marks_merge();
+}
 static void sync_status(const char *msg)
 {
     snprintf(sync_note, sizeof sync_note, "%s", msg);
@@ -211,7 +217,7 @@ static void home_sync_tick(void)
     sync_status(T("Sincronizando…"));
     char out[400];
     int ok = nube_sync(0, sync_status, out, sizeof out);   /* un libro tarda: se ve cuál */
-    pockit_books_missing(1);   /* los libros que bajó, a la biblioteca del lector */
+    after_sync();
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 
@@ -255,6 +261,7 @@ static int home_handler(int type, int par1, int par2)
  * enciende por esto), si hay una versión nueva en el catálogo. Si la hay, los Ajustes lo
  * dicen y se instala con un toque: baja el programa de su plataforma y sustituye al actual. */
 #define APPS_CDN "https://cdn.jsdelivr.net/gh/jcordon5/pockit-apps@dist"
+#define APPS_RAW "https://raw.githubusercontent.com/jcordon5/pockit-apps/dist"
 #define UPDATE_TXT POCKIT_DIR "/actualizacion.txt"   /* «<cuándo se miró>\t<versión publicada>» */
 static long update_checked;
 
@@ -276,7 +283,7 @@ static void update_check(int force)
     if (force || now - update_checked > 86400) {
         if (force && !(QueryNetwork() & NET_CONNECTED)) NetConnect2(NULL, true);   /* lo ha pedido la persona */
         if (QueryNetwork() & NET_CONNECTED) {
-            FILE *p = popen("curl -s -m 8 '" APPS_CDN "/apps.json'", "r");
+            FILE *p = popen("curl -sf -m 8 '" APPS_RAW "/apps.json' || curl -s -m 8 '" APPS_CDN "/apps.json'", "r");
             JBuf b = { 0 };
             size_t r;
             while (p && (r = fread(buf, 1, sizeof buf, p)) > 0) jb_put(&b, buf, r);
@@ -311,6 +318,25 @@ static int elf_hardfloat(const char *path)
     return (h[36] | h[37] << 8 | h[38] << 16 | (unsigned)h[39] << 24) & 0x400 ? 1 : 0;
 }
 
+/* ¿lleva dentro el texto de esa versión («2.7.0» suelto, como lo deja POCKIT_VERSION)? */
+static int has_version(const char *path, const char *ver)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t vl = strlen(ver), keep = 0, r;
+    char buf[65536 + 32];
+    int found = 0;
+    while (!found && (r = fread(buf + keep, 1, sizeof buf - 32 - keep, f)) > 0) {
+        size_t n = keep + r;
+        for (size_t i = 1; i + vl < n && !found; i++)
+            found = !memcmp(buf + i, ver, vl) && buf[i + vl] == 0 && !(buf[i - 1] == '.' || (buf[i - 1] >= '0' && buf[i - 1] <= '9'));
+        keep = n < 24 ? n : 24;
+        memmove(buf, buf + n - keep, keep);
+    }
+    fclose(f);
+    return found;
+}
+
 static void close_after_update(void) { CloseApp(); }
 static void draw_ajustes(void);
 static void do_update(int button)
@@ -330,13 +356,21 @@ static void do_update(int button)
     DrawTextRect(M + 30, by, W - 2 * M - 60, 160, T("Descargando la versión nueva…"), ALIGN_CENTER | VALIGN_MIDDLE);
     PartialUpdate(M, by, W - 2 * M, 160);
     snprintf(tmp, sizeof tmp, "%s.nuevo", self);
-    snprintf(cmd, sizeof cmd, "curl -sfL -m 180 -o '%s' '" APPS_CDN "/%s/pockit.app'", tmp, hf ? "RK3566" : "B288");
-    int st = system(cmd);
-    struct stat sb;
-    /* solo se cambia si lo descargado es un programa de la misma plataforma */
-    if (st != 0 || stat(tmp, &sb) || sb.st_size < 100000 || elf_hardfloat(tmp) != hf) {
-        remove(tmp);
-        Message(ICON_WARNING, "Pockit", T("No se pudo descargar la actualización. Pockit sigue como estaba."), 4000);
+    /* primero de GitHub (su caché dura minutos); jsDelivr puede tardar horas en tener la versión nueva.
+     * Solo se cambia si lo descargado es un programa de la misma plataforma y de la versión anunciada. */
+    static const char *FROM[] = { APPS_RAW, APPS_CDN };
+    int good = 0, stale = 0;
+    for (int i = 0; i < 2 && !good; i++) {
+        snprintf(cmd, sizeof cmd, "curl -sfL -m 180 -o '%s' '%s/%s/pockit.app'", tmp, FROM[i], hf ? "RK3566" : "B288");
+        int st = system(cmd);
+        struct stat sb;
+        if (st != 0 || stat(tmp, &sb) || sb.st_size < 100000 || elf_hardfloat(tmp) != hf) { remove(tmp); continue; }
+        if (!has_version(tmp, new_version)) { stale = 1; remove(tmp); continue; }
+        good = 1;
+    }
+    if (!good) {
+        Message(ICON_WARNING, "Pockit", stale ? T("La versión nueva aún no está lista para descargar. Prueba dentro de un rato; Pockit sigue como estaba.")
+                                              : T("No se pudo descargar la actualización. Pockit sigue como estaba."), 4000);
         return;
     }
     chmod(tmp, 0755);
@@ -377,7 +411,7 @@ static void on_data(int button)
         sync_progress(T("Sincronizando con Dropbox…"));
         char out[400];
         nube_sync(1, sync_progress, out, sizeof out);
-        pockit_books_missing(1);
+        after_sync();
         draw_ajustes();
         Message(ICON_INFORMATION, "Dropbox", out, 3500);
         return;
