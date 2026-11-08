@@ -31,8 +31,10 @@ jobs:
       # Todos los archivos, no solo el catálogo: si no, jsDelivr sigue dando el programa viejo hasta 12 h
       - name: Refrescar la caché de jsDelivr
         run: |
-          sleep 30   # que jsDelivr vea ya el commit nuevo de la rama
           cd dist
-          find . -type f ! -path './.git/*' | sed 's|^\./||' | while read -r f; do
+          purge() { find . -type f ! -path './.git/*' | sed 's|^\./||' | while read -r f; do
             curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@dist/$f" > /dev/null || true
-          done
+          done; }
+          # jsDelivr tarda en ver el commit nuevo de la rama: se refresca dos veces
+          sleep 60; purge
+          sleep 120; purge
