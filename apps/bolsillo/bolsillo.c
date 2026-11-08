@@ -7,6 +7,9 @@
  * ignora el táctil y no deja que el lector se duerma. Un botón de página vuelve a donde
  * estabas; el de encendido bloquea como siempre.
  *
+ * Si el reloj está activado (Pockit → Ajustes), en lugar del fondo sale el reloj de palabras,
+ * sin los puntos de los minutos: la pantalla cambia solo cada cinco minutos.
+ *
  * Lo que pasa se apunta en /mnt/ext1/applications/.pruebas/bolsillo.txt.
  */
 #include "inkview.h"
@@ -17,6 +20,7 @@
 #include <limits.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include "../../common/reloj.h"
 
 /* En el idioma del lector: español si está en español; si no, inglés. */
 static int en(void) { static int e = -1; if (e < 0) { const char *l = currentLang(); e = !(l && l[0] == 'e' && l[1] == 's'); } return e; }
@@ -39,6 +43,7 @@ static ibitmap *wallpaper;
 static char title[512], author[512];
 static int shown_state = -2;
 static char shown_title[512];
+static int clock_on, shown_slot = -1, shown_hour = -1;   /* el reloj: qué cinco minutos y qué hora enseña */
 
 static double clock_s(clockid_t id)
 {
@@ -146,11 +151,44 @@ static void draw_card(int st)
     snprintf(shown_title, sizeof shown_title, "%s", title);
 }
 
+/* El reloj, centrado en lo que queda por encima de la tarjeta */
+static void clock_rect(int *x, int *y, int *side)
+{
+    int cx, cy, cw;
+    card_rect(&cx, &cy, &cw);
+    int w = ScreenWidth() - 2 * 40, h = cy - 2 * 40;
+    *side = w < h ? w : h;
+    *x = (ScreenWidth() - *side) / 2;
+    *y = (cy - *side) / 2;
+}
+
+static void draw_clock(void)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    int x, y, side;
+    clock_rect(&x, &y, &side);
+    rj_draw(x, y, side, tm.tm_hour, tm.tm_min, 0);
+    shown_slot = tm.tm_min / 5;
+    shown_hour = tm.tm_hour;
+}
+
+/* el fondo: el reloj o, si está desactivado, el fondo de reposo */
+static void draw_back(int x, int y, int w, int h)
+{
+    if (clock_on) FillArea(x, y, w, h, WHITE);
+    else if (wallpaper) DrawBitmapArea(x, y, wallpaper, x, y, w, h);
+}
+
 static void draw_all(void)
 {
     int st = audio_state();
+    rj_default = !en();
+    clock_on = rj_enabled("bolsillo");
     ClearScreen();
-    if (wallpaper) StretchBitmap(0, 0, ScreenWidth(), ScreenHeight(), wallpaper, 0);
+    if (clock_on) draw_clock();
+    else if (wallpaper) StretchBitmap(0, 0, ScreenWidth(), ScreenHeight(), wallpaper, 0);
     draw_card(st);
     FullUpdate();
 }
@@ -194,9 +232,23 @@ static void tick(void)
     if (!keylock && (st != shown_state || strcmp(title, shown_title))) {
         int cx, cy, cw;
         card_rect(&cx, &cy, &cw);
-        if (wallpaper) DrawBitmapArea(cx, cy, wallpaper, cx, cy, cw, CARD_H);
+        draw_back(cx, cy, cw, CARD_H);
         draw_card(st);
         PartialUpdate(cx, cy, cw, CARD_H);
+    }
+
+    /* El reloj cambia cada cinco minutos; a cada hora en punto, con destello, para limpiar la tinta. */
+    if (!keylock && clock_on) {
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm);
+        if (tm.tm_hour != shown_hour) draw_all();
+        else if (tm.tm_min / 5 != shown_slot) {
+            int x, y, side;
+            clock_rect(&x, &y, &side);
+            draw_clock();
+            PartialUpdate(x, y, side, side);
+        }
     }
     last_keylock = keylock; last_state = st; last_output = out;
     suspended_before = gap;

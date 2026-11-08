@@ -403,3 +403,8 @@
 { "≈ %s por consulta%s", "≈ %s per question%s" },
 { "Bajando «%s»…", "Downloading “%s”…" },
 { "Subiendo «%s»…", "Uploading “%s”…" },
+{ "RELOJ DE PALABRAS", "WORD CLOCK (IN SPANISH)" },
+{ "En el Inicio", "On Home" },
+{ "En el Modo bolsillo", "In Pocket mode" },
+{ "Con un punto por cada minuto", "With a dot for each minute" },
+{ "Cambia cada cinco minutos", "Changes every five minutes" },

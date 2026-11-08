@@ -16,6 +16,7 @@
 #include "pockit.h"
 #include "../../common/ai.h"
 #include "icons.h"
+#include "../../common/reloj.h"
 
 #define M 64
 #define SOFT 0x777777
@@ -83,7 +84,8 @@ static void update_check(int force);
 /* ---------- Inicio ---------- */
 static int home_shown;
 static char sync_note[80];
-static int card_y0, card_y1, donde_y0, tiles_y0;
+static int card_y0, card_y1, donde_y0, tiles_y0, tiles_cols = 3;
+static int clock_x, clock_y, clock_side;   /* el reloj de palabras del Inicio (lado 0: no hay) */
 #define TILE_H 180
 
 typedef struct { const char *name; int mod; const unsigned char *icon; int len; } Tile;
@@ -100,6 +102,31 @@ ibitmap *pockit_icon(int mod)
 {
     for (int i = 0; i < NTILES; i++) if (TILES[i].mod == mod) return icon(TILES[i].name, TILES[i].icon, TILES[i].len);
     return NULL;
+}
+
+/* el reloj del Inicio, con los cuatro puntos de los minutos */
+static int clock_min = -1;
+static void draw_home_clock(void)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    rj_draw_ex(clock_x, clock_y, clock_side, tm.tm_hour, tm.tm_min, 1, 20, 17);
+    clock_min = tm.tm_hour * 60 + tm.tm_min;
+}
+
+/* cada minuto, mientras estás en el Inicio: solo se repinta el reloj, sin destello */
+static void home_clock_tick(void)
+{
+    if (cur != MOD_HOME || !clock_side) return;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    if (tm.tm_hour * 60 + tm.tm_min != clock_min) {
+        draw_home_clock();
+        PartialUpdate(clock_x, clock_y, clock_side, clock_side);
+    }
+    SetWeakTimer("pk_reloj", home_clock_tick, (60 - tm.tm_sec) * 1000 + 300);
 }
 
 static void draw_home(void)
@@ -177,16 +204,36 @@ static void draw_home(void)
     }
     y += 120;
 
-    /* módulos */
-    tiles_y0 = H - 2 * TILE_H - 40;
-    int tw = (W - 2 * M) / 3;
+    /* módulos: con el reloj, en una sola fila para dejarle sitio */
+    rj_default = !pockit_en();
+    int with_clock = rj_enabled("inicio");
+    tiles_cols = with_clock ? NTILES : 3;
+    tiles_y0 = H - (with_clock ? 1 : 2) * TILE_H - 40;
+    int tw = (W - 2 * M) / tiles_cols;
     for (int i = 0; i < NTILES; i++) {
-        int x = M + (i % 3) * tw, ty = tiles_y0 + (i / 3) * TILE_H;
+        int x = M + (i % tiles_cols) * tw, ty = tiles_y0 + (i / tiles_cols) * TILE_H;
         DrawRect(x + 8, ty + 8, tw - 16, TILE_H - 16, LINE);
         ibitmap *b = icon(TILES[i].name, TILES[i].icon, TILES[i].len);
-        if (b) { DrawBitmap(x + (tw - b->width) / 2, ty + 18, b); free(b); }
-        SetFont(f_body, BLACK);
-        DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? T("Ajustes ·") : T(TILES[i].name), ALIGN_CENTER);
+        if (b) {   /* en una fila de cinco en pantallas estrechas (el Q), los iconos encogen */
+            int is = tw - 56 < b->width ? tw - 56 : b->width;
+            StretchBitmap(x + (tw - is) / 2, ty + 18 + (b->width - is) / 2, is, is * b->height / b->width, b, 0);
+            free(b);
+        }
+        SetFont(tw < 200 ? f_small : f_body, BLACK);
+        DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? T("Ajustes ·") : T(TILES[i].name), ALIGN_CENTER | DOTS);
+    }
+
+    /* el reloj, en el hueco entre tu semana y los módulos */
+    clock_side = 0;
+    if (with_clock) {
+        int side = tiles_y0 - y - 20;
+        if (side > W - 2 * M) side = W - 2 * M;
+        if (side >= 300) {
+            clock_side = side;
+            clock_x = (W - side) / 2;
+            clock_y = y + (tiles_y0 - y - side) / 2 - 10;
+            draw_home_clock();
+        }
     }
     POCKIT_REFRESH(home_shown);
 }
@@ -224,9 +271,12 @@ static void home_sync_tick(void)
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 
+static void bolsillo_update(int force);
 static void home_update_tick(void)
 {
     if (cur != MOD_HOME) return;
+    static int bolsillo_checked;
+    if (!bolsillo_checked && (QueryNetwork() & NET_CONNECTED)) { bolsillo_checked = 1; bolsillo_update(0); }
     int had = new_version[0];
     update_check(0);
     if (!had && new_version[0] && cur == MOD_HOME) draw_home();
@@ -243,11 +293,12 @@ static int home_handler(int type, int par1, int par2)
         draw_home();
         SetWeakTimer("pk_update_check", home_update_tick, 4000);   /* después de pintar: el Inicio no espera a la red */
         SetWeakTimer("pk_nube", home_sync_tick, 1200);
+        if (clock_side) home_clock_tick();
         break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
         if (y >= tiles_y0) {
-            int i = ((y - tiles_y0) / TILE_H) * 3 + (x - M) / ((W - 2 * M) / 3);
+            int i = ((y - tiles_y0) / TILE_H) * tiles_cols + (x - M) / ((W - 2 * M) / tiles_cols);
             if (i >= 0 && i < NTILES && x >= M) pockit_open(TILES[i].mod);
         } else if (y >= card_y0 && y < card_y1) lectura_open_current();
         return 1;
@@ -340,6 +391,47 @@ static int has_version(const char *path, const char *ver)
     return found;
 }
 
+/* El Modo bolsillo, si está instalado al lado de Pockit, se pone al día con él (comparten el reloj).
+ * force 0: solo si el que hay aún no tiene el reloj (lo instaló una versión anterior). */
+static int file_has(const char *path, const char *needle)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t nl = strlen(needle), keep = 0, r;
+    char buf[65536 + 64];
+    int found = 0;
+    while (!found && (r = fread(buf + keep, 1, sizeof buf - 64 - keep, f)) > 0) {
+        size_t n = keep + r;
+        for (size_t i = 0; i + nl <= n && !found; i++) found = !memcmp(buf + i, needle, nl);
+        keep = n < 48 ? n : 48;
+        memmove(buf, buf + n - keep, keep);
+    }
+    fclose(f);
+    return found;
+}
+static void bolsillo_update(int force)
+{
+    char self[600], bol[640], tmp[660], cmd[900];
+    if (!self_path(self, sizeof self)) return;
+    int hf = elf_hardfloat(self);
+    char *sl = strrchr(self, '/');
+    if (hf < 0 || !sl) return;
+    *sl = 0;
+    snprintf(bol, sizeof bol, "%s/Bolsillo.app", self);
+    struct stat sb;
+    if (stat(bol, &sb) || (!force && file_has(bol, "reloj.cfg"))) return;
+    snprintf(tmp, sizeof tmp, "%s.nuevo", bol);
+    static const char *FROM[] = { APPS_RAW, APPS_CDN };
+    for (int i = 0; i < 2; i++) {
+        snprintf(cmd, sizeof cmd, "curl -sfL -m 120 -o '%s' '%s/%s/bolsillo.app'", tmp, FROM[i], hf ? "RK3566" : "B288");
+        if (system(cmd) == 0 && !stat(tmp, &sb) && sb.st_size > 10000 && elf_hardfloat(tmp) == hf && file_has(tmp, "reloj.cfg")) {
+            chmod(tmp, 0755);
+            if (!rename(tmp, bol)) return;
+        }
+        remove(tmp);
+    }
+}
+
 static void close_after_update(void) { CloseApp(); }
 static void draw_ajustes(void);
 static void do_update(int button)
@@ -378,6 +470,7 @@ static void do_update(int button)
     }
     chmod(tmp, 0755);
     if (rename(tmp, self)) { remove(tmp); Message(ICON_WARNING, "Pockit", T("No se pudo instalar. Pockit sigue como estaba."), 4000); return; }
+    bolsillo_update(1);
    
     static char msg[200];
     snprintf(msg, sizeof msg, T("Pockit %s instalado. Se cierra ahora: ábrelo otra vez para usar la versión nueva."), new_version);
@@ -387,7 +480,8 @@ static void do_update(int button)
 
 /* ---------- Ajustes ---------- */
 static int aj_shown;
-static int ai_y, ver_y, data_y, ai_h = 140, ver_h = 140, data_h = 200;
+static int ai_y, ver_y, data_y, ai_h = 140, ver_h = 140, data_h = 200, clk_y[2];
+static const char *const CLK_WHERE[2] = { "inicio", "bolsillo" };
 static void draw_ajustes(void);
 
 /* un interruptor como los del lector: «on» en negro a la derecha */
@@ -481,6 +575,26 @@ static void draw_ajustes(void)
     DrawLine(M, y, W - M, y, LINE);
     y += 30;
 
+    /* el reloj de palabras: en el Inicio y en el Modo bolsillo */
+    SetFont(f_smallb, SOFT);
+    DrawString(M, y, T("RELOJ DE PALABRAS"));
+    y += 50;
+    rj_default = !pockit_en();
+    static const char *const CLK_LABEL[2] = { "En el Inicio", "En el Modo bolsillo" };
+    static const char *const CLK_SUB[2] = { "Con un punto por cada minuto", "Cambia cada cinco minutos" };
+    for (int i = 0; i < 2; i++) {
+        clk_y[i] = y;
+        SetFont(f_body, BLACK);
+        DrawString(M, y, T(CLK_LABEL[i]));
+        SetFont(f_small, SOFT);
+        DrawString(M, y + 46, T(CLK_SUB[i]));
+        switch_at(W - M - 140, y + 4, rj_enabled(CLK_WHERE[i]));
+        y += 110;
+    }
+    y += 10;
+    DrawLine(M, y, W - M, y, LINE);
+    y += 30;
+
     SetFont(f_smallb, SOFT);
     DrawString(M, y, "POCKIT");
     y += 50;
@@ -524,6 +638,15 @@ static int ajustes_h(int type, int par1, int par2)
             return 1;
         }
         if (y >= ai_y - 10 && y < ai_y + ai_h && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
+        for (int i = 0; i < 2; i++)
+            if (y >= clk_y[i] - 10 && y < clk_y[i] + 100) {
+                rj_default = !pockit_en();
+                rj_set_enabled(CLK_WHERE[i], !rj_enabled(CLK_WHERE[i]));
+                FillArea(W - M - 140, clk_y[i] + 4, 140, 64, WHITE);
+                switch_at(W - M - 140, clk_y[i] + 4, rj_enabled(CLK_WHERE[i]));
+                PartialUpdate(W - M - 140, clk_y[i] + 4, 140, 64);
+                return 1;
+            }
         if (y >= ver_y - 10 && y < ver_y + ver_h) {
             if (new_version[0]) {
                 static char q[300];

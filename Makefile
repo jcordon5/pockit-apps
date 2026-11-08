@@ -22,7 +22,7 @@ b288: $(INKVIEW)
 	zig cc -target arm-linux-gnueabi.2.23 $(CFLAGS) -I$(INKVIEW)/examples/shim -I$(INKVIEW)/sdk/6.10/B288/include \
 	  -o dist/B288/pockit.app $(POCKIT_SRC) $(INKVIEW)/sdk/6.10/B288/lib/libinkview.so -lm
 	zig cc -target arm-linux-gnueabi.2.23 $(CFLAGS) -I$(INKVIEW)/examples/shim -I$(INKVIEW)/sdk/6.10/B288/include \
-	  -o dist/B288/bolsillo.app apps/bolsillo/bolsillo.c $(INKVIEW)/sdk/6.10/B288/lib/libinkview.so
+	  -o dist/B288/bolsillo.app apps/bolsillo/bolsillo.c $(INKVIEW)/sdk/6.10/B288/lib/libinkview.so -lm
 
 # RK3566 (PocketBook Q): firmware 6.11, hard-float
 rk3566: $(INKVIEW)
@@ -30,7 +30,7 @@ rk3566: $(INKVIEW)
 	zig cc -target arm-linux-gnueabihf.2.34 $(CFLAGS) -I$(INKVIEW)/examples/shim -I$(INKVIEW)/sdk/6.11/RK3566/include \
 	  -o dist/RK3566/pockit.app $(POCKIT_SRC) $(INKVIEW)/sdk/6.11/RK3566/lib/libinkview.so -lm
 	zig cc -target arm-linux-gnueabihf.2.34 $(CFLAGS) -I$(INKVIEW)/examples/shim -I$(INKVIEW)/sdk/6.11/RK3566/include \
-	  -o dist/RK3566/bolsillo.app apps/bolsillo/bolsillo.c $(INKVIEW)/sdk/6.11/RK3566/lib/libinkview.so
+	  -o dist/RK3566/bolsillo.app apps/bolsillo/bolsillo.c $(INKVIEW)/sdk/6.11/RK3566/lib/libinkview.so -lm
 
 manifest:
 	@mkdir -p dist/icons
