@@ -72,6 +72,7 @@ typedef struct {
     long added, opened, completed_ts;
     int page, pages, done, marks, words;
     int gone;          /* ya no está en el lector: sale de su ficha en Libros/<etiqueta>/ */
+    char *shelf;       /* su archivo en Pockit/Biblioteca (y en /Pockit/Biblioteca de Dropbox), o NULL */
     double progress;   /* -1 si no se sabe */
 } Book;
 typedef struct { char *text, *note, *book, *extra; long ts; int word, remote; } Mark;   /* remote: de otro lector, por Dropbox */
@@ -144,8 +145,9 @@ static void save_ficha(const Book *b)
     snprintf(p, sizeof p, "%s/ficha.txt", dir);
     remove(p);
     snprintf(p, sizeof p, "%s/ficha.ini", dir);
-    snprintf(now, sizeof now, "title=%s\nauthor=%s\ncover=%s\nadded=%ld\nopened=%ld\ncompleted=%ld\npage=%d\npages=%d\ndone=%d\n",
-             b->title, b->author, b->cover, b->added, b->opened, b->completed_ts, b->page, b->pages, b->done);
+    snprintf(now, sizeof now, "title=%s\nauthor=%s\ncover=%s\nadded=%ld\nopened=%ld\ncompleted=%ld\npage=%d\npages=%d\ndone=%d\n%s%s%s",
+             b->title, b->author, b->cover, b->added, b->opened, b->completed_ts, b->page, b->pages, b->done,
+             b->shelf ? "file=" : "", b->shelf ? b->shelf : "", b->shelf ? "\n" : "");
     FILE *f = fopen(p, "r");
     if (f) { size_t r = fread(old, 1, sizeof old - 1, f); old[r] = 0; fclose(f); }
     if (strcmp(old, now) && (f = fopen(p, "w"))) { fputs(now, f); fclose(f); }   /* solo si cambió: con Dropbox, cada escritura se sube */
@@ -180,6 +182,7 @@ static void load_gone(void)
             else if (!strcmp(line, "page")) b.page = atoi(v);
             else if (!strcmp(line, "pages")) b.pages = atoi(v);
             else if (!strcmp(line, "done")) b.done = atoi(v);
+            else if (!strcmp(line, "file") && v[0]) b.shelf = strdup(v);
         }
         fclose(f);
         if (!b.title || book_by_title(b.title)) { free(b.title); free(b.author); free(b.cover); continue; }
@@ -612,12 +615,14 @@ static void load_data(void)
             if (!strncmp(path, "/mnt/ext1/", 10)) { char q[1100]; snprintf(q, sizeof q, FLASHDIR "/%s", path + 10); b->path = strdup(q); } else
 #endif
             b->path = strdup(path);
+            const char *sh = strstr(path, "/Pockit/Biblioteca/");
+            b->shelf = sh ? strdup(sh + 19) : NULL;
             b->position = strdup(col(st, 10));
         }
         db_finalize(st);
     }
     db_close(lib);
-    for (int i = 0; i < nbooks; i++) if (books[i].done || books[i].progress > 0) save_ficha(&books[i]);
+    for (int i = 0; i < nbooks; i++) if (books[i].done || books[i].progress > 0 || books[i].shelf) save_ficha(&books[i]);
     load_gone();
     qsort(books, nbooks, sizeof *books, by_opened);
 
@@ -1007,40 +1012,214 @@ static void draw_actividad(void)
     if (!shown) { SetFont(f_body, SOFT); DrawString(M, y, T("Sin actividad registrada.")); }
 }
 
-/* ---------- Libros ---------- */
+/* ---------- Libros ----------
+ * Los de la biblioteca del lector y, delante, los de tu biblioteca en Dropbox (/Pockit/Biblioteca)
+ * que aún no están en ella: sin descargar, o descargados pero aún sin pasar a la biblioteca.
+ * Tocar uno de Dropbox: descargarlo, abrirlo, quitarlo del lector o borrarlo de Dropbox. */
 #define BOOK_ROW 210
+#define MAX_SHELF 500
+static NubeBook shelf[MAX_SHELF];
+static int nshelf, shelf_loaded;
+static int cloud_rows[MAX_SHELF], ncloud;   /* los de Dropbox que no son ya un libro de la lista */
+
+static int in_shelf(const char *name)
+{
+    for (int i = 0; name && i < nshelf; i++) if (!strcmp(shelf[i].name, name)) return 1;
+    return 0;
+}
+static void shelf_local(const char *name, char *out, size_t n) { snprintf(out, n, FLASHDIR "/Pockit/Biblioteca/%s", name); }
+static int shelf_here(const char *name) { char p[1100]; struct stat sb; shelf_local(name, p, sizeof p); return !stat(p, &sb); }
+
+static void load_shelf(void)
+{
+    nshelf = nube_linked() ? nube_books(shelf, MAX_SHELF) : 0;
+    ncloud = 0;
+    for (int i = 0; i < nshelf; i++) {
+        int known = 0;
+        for (int j = 0; j < nbooks && !known; j++) known = books[j].shelf && !strcmp(books[j].shelf, shelf[i].name);
+        if (!known) cloud_rows[ncloud++] = i;
+    }
+    shelf_loaded = 1;
+}
+
+/* «Los_miserables_Victor_Hugo.epub» → «Los miserables Victor Hugo» */
+static void pretty_name(const char *name, char *out, size_t n)
+{
+    const char *base = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
+    snprintf(out, n, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot && dot != out) *dot = 0;
+    for (char *p = out; *p; p++) if (*p == '_') *p = ' ';
+}
+
+static void mb(long size, char *out, size_t n)
+{
+    if (size >= 1024 * 1024) snprintf(out, n, "%.1f MB", size / 1048576.0);
+    else snprintf(out, n, "%ld KB", size / 1024 + 1);
+    if (!pockit_en()) for (char *p = out; *p; p++) if (*p == '.') *p = ',';
+}
+
 static int libros_rows(void) { return (H - TABS_H - PAGER_H - TOP) / BOOK_ROW; }
 
 static void draw_libros(void)
 {
-    char sub[80];
-    snprintf(sub, sizeof sub, T("%d libros, del último abierto al primero. Toca uno para verlo."), nbooks);
+    if (!shelf_loaded) load_shelf();
+    int total = ncloud + nbooks;
+    char sub[120];
+    if (ncloud) snprintf(sub, sizeof sub, T("%d en el lector y %d en tu Dropbox. Toca uno para verlo."), nbooks, ncloud);
+    else snprintf(sub, sizeof sub, T("%d libros, del último abierto al primero. Toca uno para verlo."), nbooks);
     header(T("Libros"), sub);
     int per = libros_rows(), from = page_of[LIBROS] * per;
     int y = TOP;
-    for (int i = from; i < nbooks && i < from + per; i++, y += BOOK_ROW) {
-        Book *b = &books[i];
-        cover(b, M, y, 110, 165);
+    for (int r = from; r < total && r < from + per; r++, y += BOOK_ROW) {
         int tx = M + 140, tw = W - M - tx;
+        char info[200], when[40];
+        if (r < ncloud) {   /* de tu Dropbox, aún no en la biblioteca */
+            NubeBook *nb = &shelf[cloud_rows[r]];
+            char title[300], size[24];
+            pretty_name(nb->name, title, sizeof title);
+            Book tmp = { 0 };
+            tmp.title = title;
+            tmp.cover = "";
+            cover(&tmp, M, y, 110, 165);
+            SetFont(f_bold, BLACK);
+            DrawTextRect(tx, y, tw, 50, title, ALIGN_LEFT | DOTS);
+            mb(nb->size, size, sizeof size);
+            SetFont(f_small, SOFT);
+            DrawTextRect(tx, y + 50, tw, 40, size, ALIGN_LEFT | DOTS);
+            SetFont(f_body, BLACK);
+            DrawTextRect(tx, y + 116, tw, 44, shelf_here(nb->name) ? T("Descargado  ·  toca para abrirlo") : T("En Dropbox  ·  toca para descargarlo"), ALIGN_LEFT | DOTS);
+            DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
+            continue;
+        }
+        Book *b = &books[r - ncloud];
+        cover(b, M, y, 110, 165);
         SetFont(f_bold, BLACK);
         DrawTextRect(tx, y, tw, 50, b->title, ALIGN_LEFT | DOTS);
         SetFont(f_small, SOFT);
         DrawTextRect(tx, y + 50, tw, 40, b->author[0] ? b->author : " ", ALIGN_LEFT | DOTS);
-        char info[160], when[40];
         ago(b->opened, when, sizeof when);
-        if (b->gone) snprintf(info, sizeof info, T("Ya no está en el lector"));
+        int cloud = in_shelf(b->shelf);
+        if (b->gone) snprintf(info, sizeof info, cloud ? T("En Dropbox, sin descargar") : T("Ya no está en el lector"));
         else if (b->done) snprintf(info, sizeof info, T("Terminado  ·  %s"), when);
         else if (b->progress > 0) snprintf(info, sizeof info, "%d %%  ·  %s", (int)(b->progress * 100 + 0.5), when);
         else snprintf(info, sizeof info, T("Sin empezar"));
+        if (cloud && !b->gone) strncat(info, T("  ·  en Dropbox"), sizeof info - strlen(info) - 1);
         if (b->marks) { char m[40]; snprintf(m, sizeof m, T("  ·  %d subrayado%s"), b->marks, b->marks == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
         if (b->words) { char m[40]; snprintf(m, sizeof m, T("  ·  %d palabra%s"), b->words, b->words == 1 ? "" : "s"); strncat(info, m, sizeof info - strlen(info) - 1); }
         if (b->progress > 0) bar(tx, y + 104, tw, 10, b->done ? 1 : b->progress);
         DrawTextRect(tx, y + 126, tw, 40, info, ALIGN_LEFT | DOTS);
         DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
     }
-    int pages = (nbooks + per - 1) / per;
+    int pages = (total + per - 1) / per;
     last_page_end = page_of[LIBROS] + 1 >= pages;
-    pager(page_of[LIBROS], pages);
+    pager(page_of[LIBROS], pages ? pages : 1);
+}
+
+/* ---- qué hacer con el archivo de un libro de tu biblioteca de Dropbox ---- */
+static char act_name[300], act_title[300];
+static void reload_all(void);
+static void busy(const char *msg);
+static void draw(void);
+
+static void open_file(const char *name)
+{
+    char p[1100];
+    shelf_local(name, p, sizeof p);
+#ifndef EMULATOR
+    OpenBook(p, "", 0);   /* al abrirlo, el lector lo apunta en su biblioteca */
+#endif
+}
+
+static void after_get(int button) { if (button == 1) open_file(act_name); }
+
+static void get_file(void)
+{
+    char msg[400], err[300];
+    snprintf(msg, sizeof msg, T("Bajando «%s»…"), act_title);
+    busy(msg);
+    if (!nube_book_get(act_name, err, sizeof err)) { draw(); Message(ICON_WARNING, "Dropbox", err, 4000); return; }
+    pockit_books_index(busy);   /* a la biblioteca del lector */
+    reload_all();
+    draw();
+    snprintf(msg, sizeof msg, T("«%s» ya está en el lector."), act_title);
+    Dialog(ICON_INFORMATION, "Pockit", msg, T("Abrir"), T("Vale"), after_get);
+}
+
+static void remove_here(void)
+{
+    char p[1100], to[1200];
+    shelf_local(act_name, p, sizeof p);
+    if (in_shelf(act_name)) remove(p);   /* sigue en Dropbox */
+    else {   /* no está en ningún otro sitio: a la papelera de Pockit, por si acaso */
+        snprintf(to, sizeof to, FLASHDIR "/system/config/pockit/papelera/%ld", (long)time(NULL));
+        mkdir(FLASHDIR "/system/config/pockit/papelera", 0755);
+        mkdir(to, 0755);
+        snprintf(to + strlen(to), sizeof to - strlen(to), "/%s", strrchr(act_name, '/') ? strrchr(act_name, '/') + 1 : act_name);
+        if (rename(p, to)) remove(p);
+    }
+    pockit_books_scan();   /* que la biblioteca del lector lo olvide */
+    reload_all();
+    draw();
+}
+
+static void confirm_delete(int button)
+{
+    if (button != 1) { draw(); return; }
+    char err[300];
+    busy(T("Borrando de Dropbox…"));
+    int ok = nube_book_delete(act_name, err, sizeof err);
+    reload_all();
+    draw();
+    if (!ok) Message(ICON_WARNING, "Dropbox", err, 4000);
+}
+static void delete_remote(void)
+{
+    char msg[600];
+    snprintf(msg, sizeof msg, shelf_here(act_name) ? T("¿Borrar «%s» de tu Dropbox? En este lector sigue estando.")
+                                                   : T("¿Borrar «%s» de tu Dropbox? No está descargado en este lector."), act_title);
+    Dialog(ICON_QUESTION, "Dropbox", msg, T("Borrar"), T("Cancelar"), confirm_delete);
+}
+
+static void confirm_remove(int button) { if (button == 1) remove_here(); else draw(); }
+
+/* las opciones según dónde está: [descargar o abrir] [quitar del lector] [borrar de Dropbox] */
+static int opt_kind[3], nopt;
+enum { O_GET, O_OPEN, O_REMOVE, O_DELETE, O_CANCEL };
+static void on_option(int button)
+{
+    int k = button >= 1 && button <= nopt ? opt_kind[button - 1] : O_CANCEL;
+    switch (k) {
+    case O_GET: get_file(); break;
+    case O_OPEN: draw(); open_file(act_name); break;
+    case O_REMOVE:
+        if (in_shelf(act_name)) remove_here();
+        else {
+            char msg[600];
+            snprintf(msg, sizeof msg, T("«%s» no está en tu Dropbox: si lo quitas, ya no lo tendrás en ningún sitio."), act_title);
+            Dialog(ICON_QUESTION, "Pockit", msg, T("Quitar"), T("Cancelar"), confirm_remove);
+        }
+        break;
+    case O_DELETE: delete_remote(); break;
+    default: draw();
+    }
+}
+
+static void file_options(const char *name, const char *title)
+{
+    snprintf(act_name, sizeof act_name, "%s", name);
+    snprintf(act_title, sizeof act_title, "%s", title);
+    int here = shelf_here(name), cloud = in_shelf(name);
+    static const char *LBL[] = { "Descargar", "Abrir", "Quitar del lector", "Borrar de Dropbox", "Cancelar" };
+    nopt = 0;
+    opt_kind[nopt++] = here ? O_OPEN : O_GET;
+    if (here) opt_kind[nopt++] = O_REMOVE;
+    if (cloud && nopt < 3) opt_kind[nopt++] = O_DELETE;
+    if (nopt < 3) opt_kind[nopt++] = O_CANCEL;
+    char msg[600];
+    snprintf(msg, sizeof msg, "%s\n\n%s", title,
+             here && cloud ? T("En este lector y en tu Dropbox.") : here ? T("Solo en este lector.") : T("En tu Dropbox, sin descargar."));
+    Dialog3(ICON_QUESTION, T("Libro"), msg, T(LBL[opt_kind[0]]), T(LBL[opt_kind[1]]), T(LBL[opt_kind[2]]), on_option);
 }
 
 /* Lista de subrayados o palabras con alto variable. book: solo los de ese libro (o NULL).
@@ -1748,7 +1927,11 @@ static void draw_detail(void)
         if (b->completed_ts) { fecha(b->completed_ts, d, sizeof d); snprintf(l1, sizeof l1, T("Terminado el %s"), d); } else snprintf(l1, sizeof l1, T("Terminado"));
     } else if (b->progress > 0) snprintf(l1, sizeof l1, T("%d %%  ·  página %d de %d"), (int)(b->progress * 100 + 0.5), b->page, b->pages);
     else snprintf(l1, sizeof l1, T("Sin empezar"));
-    if (b->gone) snprintf(l2, sizeof l2, T("Ya no está en el lector"));
+    if (!shelf_loaded) load_shelf();
+    int cloud = in_shelf(b->shelf);
+    if (b->shelf && (cloud || !b->gone))   /* su archivo: dónde está, y qué hacer con él */
+        snprintf(l2, sizeof l2, "%s  ›", !b->gone && cloud ? T("En el lector y en Dropbox") : !b->gone ? T("Solo en el lector") : T("En Dropbox, sin descargar"));
+    else if (b->gone) snprintf(l2, sizeof l2, T("Ya no está en el lector"));
     else if (b->opened) { ago(b->opened, d, sizeof d); snprintf(l2, sizeof l2, T("Leído por última vez %s"), d); }
     else l2[0] = 0;
     if (b->progress > 0) bar(tx, 262, tw, 12, b->done ? 1 : b->progress);
@@ -1773,6 +1956,8 @@ static void draw_detail(void)
 
 static void detail_tap(int x, int y)
 {
+    Book *fb = &books[detail];
+    if (fb->shelf && y >= 276 && y < D_TABS_Y - 4 && x >= M + 160 && (in_shelf(fb->shelf) || !fb->gone)) { file_options(fb->shelf, fb->title); return; }
     if (y >= D_TABS_Y && y < D_TABS_Y + 70) {
         int t = (x - M) / ((W - 2 * M) / D_COUNT);
         if (t >= 0 && t < D_COUNT && t != dtab) { dtab = t; detail_page = 0; draw(); }
@@ -1884,7 +2069,13 @@ static void tap(int x, int y)
     }
     case LIBROS: {
         int k = (y - TOP) / BOOK_ROW, i = page_of[LIBROS] * libros_rows() + k;
-        if (y >= TOP && k < libros_rows() && i < nbooks) open_detail(i);
+        if (y < TOP || k >= libros_rows()) break;
+        if (i < ncloud) {
+            char title[300];
+            NubeBook *nb = &shelf[cloud_rows[i]];
+            pretty_name(nb->name, title, sizeof title);
+            file_options(nb->name, title);
+        } else if (i - ncloud < nbooks) open_detail(i - ncloud);
         break;
     }
     case PALABRAS:
@@ -2029,17 +2220,21 @@ static void run_scanner(int wait)
 #ifndef EMULATOR
     const char *fw = GetSoftwareVersion();
     bib_log("firmware %s: se pasa el buscador del lector", fw ? fw : "?", 0);
-    char cmd[1400];
+    char cmd[1600];
+    /* todo lo que diga la shell va al registro: si algo falla, se ve por qué */
     snprintf(cmd, sizeof cmd,
+        "exec >>'" BIB_LOG "' 2>&1 </dev/null; "
         "S=/ebrmain/bin/scanner.app; [ -x $S ] || S=/ebrmain/cramfs/bin/scanner.app; "
-        "[ -x $S ] || { echo 'no hay scanner.app' >> '" BIB_LOG "'; exit 0; }; "
-        "R=; command -v setsid >/dev/null 2>&1 && R=setsid; "
-        "%s$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; r=tiempo; "
+        "[ -x $S ] || { echo '  no hay scanner.app'; exit 0; }; "
+        "echo \"  buscador: $S\"; "
+        "R=; %s"
+        "$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; r=tiempo; "
         "while [ $i -lt 90 ]; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && { r=ok; break; }; "
         "kill -0 $P 2>/dev/null || { r=salio; break; }; i=$((i+1)); done; kill $P 2>/dev/null; "
-        "echo \"  buscador: $r en $i s; $(tail -c 300 /tmp/pk-scan.log | tr \"\\n\" \" \")\" >> \"$1\"' $S '" BIB_LOG "' </dev/null >/dev/null 2>&1%s",
-        wait ? "" : "", wait ? "" : " &");
-    system(cmd);
+        "echo \"  buscador: $r en $i s; $(tail -c 300 /tmp/pk-scan.log | tr \"\\n\" \" \")\"' $S%s",
+        wait ? "" : "command -v setsid >/dev/null 2>&1 && R=setsid; ", wait ? "" : " &");
+    int rc = system(cmd);
+    bib_log("  system() = %s%d", "", rc);
 #else
     (void)wait;
 #endif
@@ -2084,6 +2279,21 @@ int lectura_handler(int type, int par1, int par2) { return handler(type, par1, p
 
 /* ---------- lo que Lectura le da al Inicio ---------- */
 static void ensure_data(void) { if (!data_loaded) { load_data(); load_vocab(); build_events(); } }
+
+/* Tras descargar, quitar o borrar un libro: todo otra vez (la ficha abierta sigue en su libro) */
+static void reload_all(void)
+{
+    char title[300] = "";
+    if (detail >= 0) snprintf(title, sizeof title, "%s", books[detail].title);
+    nbooks = nmarks = nwords = nevents = 0;
+    memset(vstate, 0, sizeof vstate);
+    memset(rstate, 0, sizeof rstate);
+    data_loaded = shelf_loaded = 0;
+    eb_for = -1;
+    ensure_data();
+    load_shelf();
+    if (detail >= 0) { detail = -1; for (int i = 0; i < nbooks; i++) if (!strcmp(books[i].title, title)) detail = i; }
+}
 
 int lectura_now(PockitReading *out)
 {

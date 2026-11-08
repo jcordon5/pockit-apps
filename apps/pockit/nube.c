@@ -12,9 +12,10 @@
  *    en un solo sitio se copia al otro; si cambió en los dos, se quedan los dos (el de Dropbox como
  *    «nombre (Dropbox).md»). Lo borrado en un sitio se borra en el otro: en Dropbox va a su
  *    papelera y en el lector a system/config/pockit/papelera, así que nada se pierde.
- *  - Los libros que mandas desde la web llegan igual: van a /Pockit/Biblioteca y se bajan a
- *    Pockit/Biblioteca, donde la biblioteca del lector los encuentra. Pueden pesar decenas de MB:
- *    no pasan por la memoria (/tmp es RAM) y se van contando en pantalla.
+ *  - Los libros NO van en espejo: /Pockit/Biblioteca de Dropbox es tu biblioteca en la nube. La web
+ *    sube ahí lo que mandas; Pockit solo apunta qué hay (biblioteca.tsv) y en Lectura → Libros
+ *    eliges qué bajar a Pockit/Biblioteca, qué quitar del lector (sigue en Dropbox) y qué borrar
+ *    de Dropbox. Pueden pesar decenas de MB: no pasan por la memoria (/tmp es RAM).
  */
 #include "inkview.h"
 #include <stdio.h>
@@ -44,6 +45,9 @@
 #define TMP_FILE "/tmp/pk-nube-archivo"           /* enlace al archivo que se sube: así su nombre no pasa por la shell */
 #define DL_FILE CACHE_DIR "/nube-bajando"           /* lo que se baja, en la memoria del lector y no en RAM */
 #define BIG (512 * 1024)                            /* a partir de aquí se dice qué se está copiando */
+#define SHELF CACHE_DIR "/biblioteca.tsv"           /* los libros de /Pockit/Biblioteca: nombre, versión, tamaño, fecha */
+#define SHELF_DIR "Biblioteca"                      /* relativa a Pockit/ y a /Pockit */
+static int is_shelf(const char *rel) { return !strncasecmp(rel, SHELF_DIR "/", strlen(SHELF_DIR) + 1); }
 
 #ifdef NUBE_TEST   /* pruebas en el ordenador, contra un Dropbox de mentira */
 static const char *api(void) { return getenv("PK_NUBE_API"); }
@@ -243,7 +247,7 @@ static void walk(const char *dir, const char *rel)
         snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
         struct stat st;
         if (stat(path, &st)) continue;
-        if (S_ISDIR(st.st_mode)) { walk(path, r); continue; }
+        if (S_ISDIR(st.st_mode)) { if (!(!rel[0] && !strcasecmp(e->d_name, SHELF_DIR))) walk(path, r); continue; }   /* los libros, aparte */
         Item *it = item(r);
         it->l = 1;
         it->lsize = st.st_size;
@@ -261,6 +265,7 @@ static void load_state(void)
         char *rev = strchr(line, '\t'), *size = rev ? strchr(rev + 1, '\t') : NULL, *mt = size ? strchr(size + 1, '\t') : NULL;
         if (!mt) continue;
         *rev++ = *size++ = *mt++ = 0;
+        if (is_shelf(line)) continue;   /* hasta la 2.7 los libros iban en espejo */
         Item *it = item(line);
         it->s = 1;
         snprintf(it->srev, sizeof it->srev, "%s", rev);
@@ -288,10 +293,45 @@ static long iso_time(const char *s)   /* «2026-11-02T19:42:14Z» */
     return (long)timegm(&tm);
 }
 
+/* Los libros de /Pockit/Biblioteca, tal como se vieron en la última lista */
+typedef struct { char name[300], rev[64]; long size, mod; } Shelf;
+static Shelf *shelf;
+static int nshelf, shelf_cap;
+
+static void save_shelf(void)
+{
+    FILE *f = fopen(SHELF ".tmp", "w");
+    if (!f) return;
+    for (int i = 0; i < nshelf; i++) fprintf(f, "%s\t%s\t%ld\t%ld\n", shelf[i].name, shelf[i].rev, shelf[i].size, shelf[i].mod);
+    fclose(f);
+    rename(SHELF ".tmp", SHELF);
+}
+
+static void load_shelf(void)
+{
+    nshelf = 0;
+    FILE *f = fopen(SHELF, "r");
+    char line[800];
+    while (f && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *rev = strchr(line, '\t'), *size = rev ? strchr(rev + 1, '\t') : NULL, *mod = size ? strchr(size + 1, '\t') : NULL;
+        if (!mod) continue;
+        *rev++ = *size++ = *mod++ = 0;
+        if (nshelf == shelf_cap) { shelf_cap = shelf_cap ? shelf_cap * 2 : 64; shelf = realloc(shelf, shelf_cap * sizeof *shelf); }
+        Shelf *b = &shelf[nshelf++];
+        snprintf(b->name, sizeof b->name, "%s", line);
+        snprintf(b->rev, sizeof b->rev, "%s", rev);
+        b->size = atol(size);
+        b->mod = atol(mod);
+    }
+    if (f) fclose(f);
+}
+
 /* Lo que hay en /Pockit de Dropbox. 0 si la carpeta no existe; -1 si falló. */
 static int list_remote(char *err, size_t n)
 {
     int found = 0, more = 1, first = 1;
+    nshelf = 0;
     char cursor[1200] = "";
     while (more) {
         JBuf b = { 0 };
@@ -321,7 +361,20 @@ static int list_remote(char *err, size_t n)
             if ((a = json_key(s, t, k, o, "path_display")) < 0) continue;
             json_str(s, &t[a], path, sizeof path);
             if (strncasecmp(path, REMOTE "/", strlen(REMOTE) + 1)) continue;
-            Item *it = item(path + strlen(REMOTE) + 1);
+            const char *rel = path + strlen(REMOTE) + 1;
+            if (is_shelf(rel)) {   /* un libro: solo se apunta */
+                if (nshelf == shelf_cap) { shelf_cap = shelf_cap ? shelf_cap * 2 : 64; shelf = realloc(shelf, shelf_cap * sizeof *shelf); }
+                Shelf *b = &shelf[nshelf++];
+                memset(b, 0, sizeof *b);
+                snprintf(b->name, sizeof b->name, "%s", rel + strlen(SHELF_DIR) + 1);
+                b->size = (long)json_num_key(s, t, k, o, "size");
+                if ((a = json_key(s, t, k, o, "rev")) >= 0) json_str(s, &t[a], b->rev, sizeof b->rev);
+                char cm[40] = "";
+                if ((a = json_key(s, t, k, o, "client_modified")) >= 0) json_str(s, &t[a], cm, sizeof cm);
+                b->mod = iso_time(cm);
+                continue;
+            }
+            Item *it = item(rel);
             it->r = 1;
             it->rsize = (long)json_num_key(s, t, k, o, "size");
             if ((a = json_key(s, t, k, o, "rev")) >= 0) json_str(s, &t[a], it->rrev, sizeof it->rrev);
@@ -402,8 +455,9 @@ static int download(Item *it, const char *to)
     jb_cat(&a, "Authorization: Bearer ");
     jb_cat(&a, token);
     jb_cat(&a, "\nDropbox-API-Arg: {\"path\":");
-    char rp[100];
-    snprintf(rp, sizeof rp, "rev:%s", it->rrev);   /* justo la versión que se vio en la lista */
+    char rp[500];
+    if (it->rrev[0]) snprintf(rp, sizeof rp, "rev:%s", it->rrev);   /* justo la versión que se vio en la lista */
+    else snprintf(rp, sizeof rp, REMOTE "/%s", it->rel);
     hdr_str(&a, rp);
     jb_cat(&a, "}\n");
     char url[200];
@@ -557,6 +611,7 @@ int nube_sync(int interactive, void (*progress)(const char *msg), char *out, siz
     for (int i = 0; i < nitems; i++) had_state |= items[i].s;
     int found = list_remote(err, sizeof err);
     if (found < 0) { note_last(0, 0, 0, 0, err); snprintf(out, n, "%s", err); return 0; }
+    save_shelf();
     /* Si la carpeta de Dropbox ya no está (la borraste o es otra cuenta), no se borra nada en el
      * lector: se vuelve a subir todo, como la primera vez. */
     if (!found && had_state) for (int i = 0; i < nitems; i++) items[i].s = 0;
@@ -629,4 +684,55 @@ void nube_unlink(void)
     remove(NUBE_STATE);
     remove(NUBE_LAST);
     token[0] = 0;
+}
+
+/* ---------- tu biblioteca en Dropbox (Lectura → Libros) ---------- */
+
+int nube_books(NubeBook *out, int max)
+{
+    load_shelf();
+    int k = 0;
+    for (int i = 0; i < nshelf && k < max; i++, k++) {
+        snprintf(out[k].name, sizeof out[k].name, "%s", shelf[i].name);
+        out[k].size = shelf[i].size;
+        out[k].mod = shelf[i].mod;
+    }
+    return k;
+}
+
+static int ready(char *err, size_t n)
+{
+    if (!nube_linked()) { snprintf(err, n, T("Pockit no está enlazado con Dropbox.")); return 0; }
+    if (!online(1)) { snprintf(err, n, T("No hay conexión. Activa la wifi y vuelve a intentarlo.")); return 0; }
+    return refresh_token(err, n);
+}
+
+/* Baja un libro de /Pockit/Biblioteca a Pockit/Biblioteca. */
+int nube_book_get(const char *name, char *err, size_t n)
+{
+    if (!ready(err, n)) return 0;
+    load_shelf();
+    Item it;
+    memset(&it, 0, sizeof it);
+    snprintf(it.rel, sizeof it.rel, SHELF_DIR "/%s", name);
+    for (int i = 0; i < nshelf; i++) if (!strcmp(shelf[i].name, name)) { snprintf(it.rrev, sizeof it.rrev, "%s", shelf[i].rev); it.rmod = shelf[i].mod; }
+    if (download(&it, it.rel)) return 1;
+    it.rrev[0] = 0;   /* quizá cambió desde la última lista: la versión de ahora */
+    if (download(&it, it.rel)) return 1;
+    snprintf(err, n, T("No se pudo bajar de Dropbox. Prueba otra vez con la wifi encendida."));
+    return 0;
+}
+
+/* Lo borra de /Pockit/Biblioteca (va a la papelera de Dropbox). El del lector, si está, se queda. */
+int nube_book_delete(const char *name, char *err, size_t n)
+{
+    if (!ready(err, n)) return 0;
+    Item it;
+    memset(&it, 0, sizeof it);
+    snprintf(it.rel, sizeof it.rel, SHELF_DIR "/%s", name);
+    if (!remote_delete(&it)) { snprintf(err, n, T("Dropbox no dejó borrarlo. Prueba otra vez.")); return 0; }
+    load_shelf();
+    for (int i = 0; i < nshelf; i++) if (!strcmp(shelf[i].name, name)) { shelf[i] = shelf[--nshelf]; break; }
+    save_shelf();
+    return 1;
 }

@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.7.1"
+#define POCKIT_VERSION "2.8.0"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -51,6 +51,10 @@ int nube_linked(void);                                     /* 1 si Pockit está 
 int nube_pending(void);                                    /* 1 si hay cambios en el lector sin subir */
 int nube_sync(int interactive, void (*progress)(const char *msg), char *out, size_t n);   /* 1 si fue bien; out: cómo fue */
 long nube_last(char *msg, size_t n);                       /* cuándo fue la última (0 si nunca) y cómo fue */
+typedef struct { char name[300]; long size, mod; } NubeBook;   /* name: relativo a /Pockit/Biblioteca */
+int nube_books(NubeBook *out, int max);                    /* tu biblioteca en Dropbox, según la última sincronización */
+int nube_book_get(const char *name, char *err, size_t n);  /* lo baja a Pockit/Biblioteca */
+int nube_book_delete(const char *name, char *err, size_t n);   /* lo borra de Dropbox (no del lector) */
 void nube_unlink(void);
 void pockit_book_dir(const char *title, char *out, size_t n);       /* Libros/<etiqueta>/ de un libro */
 void pockit_book_adopt(const char *title, const char *cache_dir);   /* trae lo guardado por la 2.1 */
