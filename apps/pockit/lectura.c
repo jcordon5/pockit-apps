@@ -1088,7 +1088,7 @@ static void draw_libros(void)
             SetFont(f_small, SOFT);
             DrawTextRect(tx, y + 50, tw, 40, size, ALIGN_LEFT | DOTS);
             SetFont(f_body, BLACK);
-            DrawTextRect(tx, y + 116, tw, 44, shelf_here(nb->name) ? T("Descargado  ·  toca para abrirlo") : T("En Dropbox  ·  toca para descargarlo"), ALIGN_LEFT | DOTS);
+            DrawTextRect(tx, y + 116, tw, 44, shelf_here(nb->name) ? T("Descargado") : T("En Dropbox  ·  toca para descargarlo"), ALIGN_LEFT | DOTS);
             DrawLine(M, y + BOOK_ROW - 18, W - M, y + BOOK_ROW - 18, LINE);
             continue;
         }
@@ -1123,32 +1123,18 @@ static void busy(const char *msg);
 static void bib_log(const char *fmt, const char *a, int n);
 static void draw(void);
 
-static void open_file(const char *name)
-{
-    char p[1100];
-    shelf_local(name, p, sizeof p);
-#ifndef EMULATOR
-    const char *h = GetFileHandler(p);
-    int rc = OpenBook(p, NULL, 0);   /* al abrirlo, el lector lo apunta en su biblioteca */
-    char line[1300];
-    snprintf(line, sizeof line, "abrir %s (con %s): ", p, h ? h : "?");
-    bib_log("%s%d", line, rc);
-#endif
-}
-
-static void after_get(int button) { if (button == 1) open_file(act_name); }
-
 static void get_file(void)
 {
     char msg[400], err[300];
     snprintf(msg, sizeof msg, T("Bajando «%s»…"), act_title);
     busy(msg);
     if (!nube_book_get(act_name, err, sizeof err)) { draw(); Message(ICON_WARNING, "Dropbox", err, 4000); return; }
-    pockit_books_index(busy);   /* a la biblioteca del lector */
+    int scanned = pockit_books_index(busy);   /* a la biblioteca del lector */
     reload_all();
     draw();
-    snprintf(msg, sizeof msg, T("«%s» ya está en el lector."), act_title);
-    Dialog(ICON_INFORMATION, "Pockit", msg, T("Abrir"), T("Vale"), after_get);
+    if (scanned) FullUpdate();
+    snprintf(msg, sizeof msg, T("«%s» ya está en tu biblioteca."), act_title);
+    Message(ICON_INFORMATION, "Pockit", msg, 3000);
 }
 
 static void remove_here(void)
@@ -1196,7 +1182,6 @@ static void on_option(int button)
     int k = button >= 1 && button <= nopt ? opt_kind[button - 1] : O_CANCEL;
     switch (k) {
     case O_GET: get_file(); break;
-    case O_OPEN: draw(); open_file(act_name); break;
     case O_REMOVE:
         if (in_shelf(act_name)) remove_here();
         else {
@@ -1226,8 +1211,8 @@ static void file_options(const char *name, const char *title, int x, int y)
     int here = shelf_here(name), cloud = in_shelf(name);
     static const char *LBL[] = { "Descargar", "Abrir", "Quitar del lector", "Borrar de Dropbox", "Cancelar" };
     nopt = 0;
-    opt_kind[nopt++] = here ? O_OPEN : O_GET;
-    if (here) opt_kind[nopt++] = O_REMOVE;
+    if (!here) opt_kind[nopt++] = O_GET;
+    else opt_kind[nopt++] = O_REMOVE;
     if (cloud) opt_kind[nopt++] = O_DELETE;
     snprintf(fmenu_head, sizeof fmenu_head, "%s", here && cloud ? T("En este lector y en tu Dropbox") : here ? T("Solo en este lector") : T("En tu Dropbox, sin descargar"));
     int k = 0;
@@ -2268,6 +2253,14 @@ int pockit_books_index(void (*progress)(const char *msg))
     if (!n) return 0;
     if (progress) progress(T("Añadiendo a la biblioteca del lector…"));
     run_scanner(1);
+#ifndef EMULATOR
+    /* el buscador pinta su propia pantalla y deja la del lector descolocada (lo de abajo, arriba):
+     * se vuelve a dejar la pantalla como la quiere Pockit antes de repintar */
+    SetOrientation(GetOrientation());
+    SetPanelType(PANEL_DISABLED);
+    ClearScreen();
+    FullUpdate();
+#endif
     n = books_missing(0, NULL);
     bib_log("tras el buscador faltan %s%d", "", n);
     return 1;

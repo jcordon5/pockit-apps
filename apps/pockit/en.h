@@ -230,6 +230,8 @@
 { "Dropbox no dejó borrarlo. Prueba otra vez.", "Dropbox didn't let it be deleted. Try again." },
 { "En este lector y en tu Dropbox", "On this reader and in your Dropbox" },
 { "En tu Dropbox, sin descargar", "In your Dropbox, not downloaded" },
+{ "«%s» ya está en tu biblioteca.", "“%s” is now in your library." },
+{ "Descargado", "Downloaded" },
 { "No se pudo descargar la actualización. Pockit sigue como estaba.", "Couldn't download the update. Pockit is unchanged." },
 { "No se pudo deshacer: la copia ya no está.", "Couldn't undo: the backup is gone." },
 { "No se pudo guardar «%.40s»", "Couldn't save “%.40s”" },
