@@ -13,7 +13,6 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <dirent.h>
 #include "pockit.h"
 #include "../../common/ai.h"
 #include "icons.h"
@@ -103,61 +102,6 @@ ibitmap *pockit_icon(int mod)
     return NULL;
 }
 
-/* «Para hacer»: las tareas sin hacer del Cuaderno («- [ ] …»), de las notas más recientes primero.
- * Solo si sobra sitio entre la semana y los módulos (en el Q, con su pantalla alta, caben varias). */
-#define MAX_TASKS 12
-typedef struct { char text[200], note[600]; long mtime; } HomeTask;
-static HomeTask tasks[MAX_TASKS];
-static int ntasks, tasks_y0, tasks_shown;
-#define TASK_ROW 60
-
-static void load_tasks(void)
-{
-    ntasks = 0;
-    char dir[600];
-    pockit_path(dir, sizeof dir, "Notas");
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    static HomeTask all[200];
-    int nall = 0;
-    while ((e = readdir(d)) && nall < 200) {
-        size_t l = strlen(e->d_name);
-        if (e->d_name[0] == '.' || l < 4 || strcmp(e->d_name + l - 3, ".md")) continue;
-        char path[900];
-        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-        struct stat st;
-        if (stat(path, &st)) continue;
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        char line[600];
-        while (fgets(line, sizeof line, f) && nall < 200) {
-            char *t = line;
-            while (*t == ' ' || *t == '\t') t++;
-            if (strncmp(t, "- [ ] ", 6)) continue;
-            t += 6;
-            HomeTask *k = &all[nall];
-            int o = 0;
-            for (; *t && *t != '\n' && *t != '\r' && o < (int)sizeof k->text - 1; t++)
-                if (*t != '*' && *t != '`' && *t != '_') k->text[o++] = *t;   /* sin marcas de Markdown */
-            k->text[o] = 0;
-            if (!o) continue;
-            snprintf(k->note, sizeof k->note, "%s", path);
-            k->mtime = st.st_mtime;
-            nall++;
-        }
-        fclose(f);
-    }
-    closedir(d);
-    for (int i = 0; i < nall && ntasks < MAX_TASKS; i++) {   /* las de las notas más recientes */
-        int best = -1;
-        for (int j = 0; j < nall; j++) if (all[j].mtime >= 0 && (best < 0 || all[j].mtime > all[best].mtime)) best = j;
-        if (best < 0) break;
-        tasks[ntasks++] = all[best];
-        all[best].mtime = -1;
-    }
-}
-
 static void draw_home(void)
 {
     fonts();
@@ -233,28 +177,6 @@ static void draw_home(void)
     }
     y += 120;
 
-    /* para hacer, si cabe */
-    tiles_y0 = H - 2 * TILE_H - 40;
-    tasks_shown = 0;
-    load_tasks();
-    int rows = (tiles_y0 - 30 - (y + 64)) / TASK_ROW;
-    if (ntasks && rows >= 2) {
-        DrawLine(M, y - 20, W - M, y - 20, LINE);
-        y += 10;
-        SetFont(f_bold, BLACK);
-        DrawString(M, y, T("Para hacer"));
-        y += 64;
-        tasks_y0 = y;
-        tasks_shown = ntasks < rows ? ntasks : rows;
-        for (int i = 0; i < tasks_shown; i++) {
-            int ty = y + i * TASK_ROW;
-            DrawRect(M, ty + 10, 34, 34, BLACK);
-            DrawRect(M + 1, ty + 11, 32, 32, BLACK);
-            SetFont(f_body, BLACK);
-            DrawTextRect(M + 56, ty, W - 2 * M - 56, TASK_ROW, tasks[i].text, ALIGN_LEFT | DOTS);
-        }
-    }
-
     /* módulos */
     tiles_y0 = H - 2 * TILE_H - 40;
     int tw = (W - 2 * M) / 3;
@@ -289,6 +211,7 @@ static void home_sync_tick(void)
     sync_status(T("Sincronizando…"));
     char out[400];
     int ok = nube_sync(0, sync_status, out, sizeof out);   /* un libro tarda: se ve cuál */
+    pockit_books_missing(1);   /* los libros que bajó, a la biblioteca del lector */
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
 }
 
@@ -317,8 +240,6 @@ static int home_handler(int type, int par1, int par2)
         if (y >= tiles_y0) {
             int i = ((y - tiles_y0) / TILE_H) * 3 + (x - M) / ((W - 2 * M) / 3);
             if (i >= 0 && i < NTILES && x >= M) pockit_open(TILES[i].mod);
-        } else if (tasks_shown && y >= tasks_y0 && y < tasks_y0 + tasks_shown * TASK_ROW) {
-            cuaderno_open_note(tasks[(y - tasks_y0) / TASK_ROW].note);
         } else if (y >= card_y0 && y < card_y1) lectura_open_current();
         return 1;
     }
@@ -456,6 +377,7 @@ static void on_data(int button)
         sync_progress(T("Sincronizando con Dropbox…"));
         char out[400];
         nube_sync(1, sync_progress, out, sizeof out);
+        pockit_books_missing(1);
         draw_ajustes();
         Message(ICON_INFORMATION, "Dropbox", out, 3500);
         return;
@@ -594,6 +516,7 @@ static int main_handler(int type, int par1, int par2)
         for (int m = 0; m < MOD_COUNT; m++) if (inited[m]) HANDLERS[m](EVT_EXIT, par1, par2);
         char out[400];
         if (nube_linked() && (QueryNetwork() & NET_CONNECTED) && nube_pending()) nube_sync(0, NULL, out, sizeof out);   /* lo que quede por subir */
+        pockit_books_scan();   /* si la biblioteca del lector aún no tiene algún libro de Pockit */
         return 0;
     }
     return HANDLERS[cur](type, par1, par2);

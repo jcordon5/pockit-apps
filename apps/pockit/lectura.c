@@ -295,7 +295,7 @@ static void load_data(void)
         while (db_step(st) == SQLITE_ROW && nbooks < MAX_BOOKS) {
             const char *fn = col(st, 2), *folder = col(st, 3), *author = col(st, 1);
             if (!is_book(fn) || !strcmp(author, "PocketBook International SA")) continue;
-            if (strstr(folder, "/Pockit/")) continue;   /* los archivos de Pockit no son libros */
+            if (strstr(folder, "/Pockit/") && !strstr(folder, "/Pockit/Biblioteca")) continue;   /* los archivos de Pockit no son libros; los de su Biblioteca, sí */
             char path[1024];
             snprintf(path, sizeof path, "%s/%s", folder, fn);
 #ifndef EMULATOR
@@ -1644,6 +1644,84 @@ static int handler(int type, int par1, int par2)
         break;
     }
     return 0;
+}
+
+/* ---------- que la biblioteca del lector vea los libros que baja Pockit ----------
+ * La sincronización deja los libros en Pockit/Biblioteca, pero la biblioteca del lector solo busca
+ * libros nuevos al desconectar el cable o al reiniciar. BookReady() le avisa de cada uno (en el
+ * firmware 6.11 basta, en el 6.8 no); si al cerrar Pockit sigue faltando alguno, se pasa el buscador
+ * de libros del propio lector (scanner.app), como hace él al desconectar el cable. */
+#define BIBLIOTECA FLASHDIR "/Pockit/Biblioteca"
+#define MAX_TOLD 64
+static char told[MAX_TOLD][300];
+static int ntold;
+
+static int in_library(sqlite3 *lib, const char *folder, const char *fn)
+{
+    sqlite3_stmt *st;
+    if (db_prepare(lib, "select 1 from files f join folders fo on fo.id = f.folder_id where fo.name = ? and f.filename = ?", -1, &st, NULL)) return 1;
+    db_bind_text(st, 1, folder, -1, NULL);
+    db_bind_text(st, 2, fn, -1, NULL);
+    int found = db_step(st) == SQLITE_ROW;
+    db_finalize(st);
+    return found;
+}
+
+static int missing_in(sqlite3 *lib, const char *dir, const char *dbdir, int notify, int depth)
+{
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char path[1024], dbpath[1024];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        snprintf(dbpath, sizeof dbpath, "%s/%s", dbdir, e->d_name);
+        struct stat sb;
+        if (stat(path, &sb)) continue;
+        if (S_ISDIR(sb.st_mode)) { if (depth < 4) n += missing_in(lib, path, dbpath, notify, depth + 1); continue; }
+        if (!is_book(e->d_name) || in_library(lib, dbdir, e->d_name)) continue;
+        n++;
+        if (!notify) continue;
+        int i = 0;
+        while (i < ntold && strcmp(told[i], dbpath)) i++;
+        if (i < ntold) continue;   /* ya avisado en esta sesión */
+        if (ntold < MAX_TOLD) snprintf(told[ntold++], sizeof told[0], "%s", dbpath);
+#ifndef EMULATOR
+        BookReady(path);
+#endif
+    }
+    closedir(d);
+    return n;
+}
+
+/* Cuántos libros de Pockit/Biblioteca no están aún en la biblioteca del lector (y, con notify, se le avisa). */
+int pockit_books_missing(int notify)
+{
+    struct stat sb;
+    if (stat(BIBLIOTECA, &sb) || !load_sqlite()) return 0;
+    sqlite3 *lib = NULL;
+    if (db_open(EXPLORER, &lib, SQLITE_OPEN_READONLY, NULL)) { if (lib) db_close(lib); return 0; }
+    int n = missing_in(lib, BIBLIOTECA, "/mnt/ext1/Pockit/Biblioteca", notify, 0);
+    db_close(lib);
+    return n;
+}
+
+/* Al cerrar Pockit: si falta alguno, el buscador del lector, aparte (sigue aunque Pockit se cierre) y
+ * parado en cuanto dice «Scan finished», que si no se queda abierto. Una vez por sesión. */
+void pockit_books_scan(void)
+{
+    static int done;
+    if (done || !pockit_books_missing(0)) return;
+    done = 1;
+#ifndef EMULATOR
+    system("S=/ebrmain/bin/scanner.app; [ -x $S ] || S=/ebrmain/cramfs/bin/scanner.app; [ -x $S ] || exit 0; "
+           "R=; command -v setsid >/dev/null 2>&1 && R=setsid; "
+           "$R sh -c '$0 </dev/null >/tmp/pk-scan.log 2>&1 & P=$!; i=0; "
+           "while [ $i -lt 120 ]; do sleep 1; grep -q \"Scan finished\" /tmp/pk-scan.log && break; "
+           "kill -0 $P 2>/dev/null || exit 0; i=$((i+1)); done; kill $P 2>/dev/null' $S </dev/null >/dev/null 2>&1 &");
+#endif
 }
 
 void lectura_args(int argc, char *argv[])

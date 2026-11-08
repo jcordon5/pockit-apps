@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.6.0"
+#define POCKIT_VERSION "2.6.1"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -66,6 +66,8 @@ typedef struct { char title[300], author[200], cover[1200]; double progress; int
 int lectura_now(PockitReading *out);        /* el libro a medias abierto más recientemente */
 int lectura_week(int active[7]);            /* días con lectura de lunes a domingo; devuelve el de hoy */
 void lectura_open_current(void);            /* abre la ficha del libro que lees */
+int pockit_books_missing(int notify);       /* libros de Pockit/Biblioteca que la biblioteca del lector aún no tiene */
+void pockit_books_scan(void);               /* al cerrar: que el lector busque los que falten */
 void cuaderno_open_note(const char *path);  /* abre una nota concreta */
 void cuaderno_open_tag(const char *tag);    /* abre el Cuaderno filtrado por una etiqueta */
 
