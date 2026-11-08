@@ -3,12 +3,13 @@
  * Lo usan el Inicio de Pockit (con los cuatro puntos de los minutos) y el Modo bolsillo
  * (sin ellos: así solo cambia cada cinco minutos).
  *
- * Rejilla propia de 11 × 10. Las palabras se solapan donde pueden («DOSEISIETE»,
+ * Rejilla propia que se adapta al hueco: en un cuadrado, 11 × 10; en uno apaisado, más
+ * columnas y menos filas. Las palabras se solapan donde pueden («DOSEISIETE»,
  * «CINCOCHONCE») y eso deja sitio para «EN PUNTO». La tipografía es monolínea tipo DIN,
  * de 18 de alto y trazo de 3, con todos los trazos rectos centrados en x,5: la tinta la
  * pinta limpia. Cada letra se dibuja una vez con antialias y luego se estampa.
  *
- *   rj_draw(x, y, lado, hora, minuto, puntos)   pinta el reloj en un cuadrado
+ *   rj_draw_box(x, y, w, h, hora, minuto, puntos, margen x, margen y, alto de letra)
  *   rj_phrase(h, m, out, n)                     «son las siete y media»
  *   rj_on / rj_off / rj_bg                      colores (por defecto, tinta sobre papel)
  *
@@ -23,39 +24,74 @@
 #include <string.h>
 #include <sys/stat.h>
 
-static const char *const RJ_GRID[10] = {
-    "SONESLASUNA",
-    "DOSEISIETEA",
-    "TRESCUATROL",
-    "CINCOCHONCE",
-    "NUEVESDIEZA",
-    "DOCEENPUNTO",
-    "MENOSYADIEZ",
-    "CUARTOMEDIA",
-    "VEINTICINCO",
-    "VEINTEAYOUS",
+/* Las piezas de la rejilla, en orden de lectura. Algunas guardan varias palabras que comparten
+ * letras («DOSEISIETE»: dos, seis y siete). La rejilla se monta con tantas columnas como pida
+ * el hueco (rj_layout): con 11 sale la cuadrada de siempre. */
+static const char *const RJ_TOK[] = {
+    "SON", "ES", "LAS", "UNA", "DOSEISIETE", "TRES", "CUATRO", "CINCOCHONCE", "NUEVE", "DIEZ", "DOCE",
+    "EN", "PUNTO", "MENOS", "Y", "DIEZ", "CUARTO", "MEDIA", "VEINTICINCO", "VEINTE",
+};
+#define RJ_NTOK ((int)(sizeof RJ_TOK / sizeof RJ_TOK[0]))
+
+enum { RJ_ES, RJ_SON, RJ_LA, RJ_LAS, RJ_PUNTO, RJ_Y, RJ_MENOS, RJ_M5, RJ_M10, RJ_M15, RJ_M20, RJ_M25, RJ_M30, RJ_H1 };
+/* cada palabra: hasta dos trozos [pieza, desde, cuántas letras] */
+static const signed char RJ_PARTS[RJ_H1 + 12][2][3] = {
+    [RJ_ES] = { { 1, 0, 2 }, { -1 } }, [RJ_SON] = { { 0, 0, 3 }, { -1 } },
+    [RJ_LA] = { { 2, 0, 2 }, { -1 } }, [RJ_LAS] = { { 2, 0, 3 }, { -1 } },
+    [RJ_PUNTO] = { { 11, 0, 2 }, { 12, 0, 5 } }, [RJ_Y] = { { 14, 0, 1 }, { -1 } }, [RJ_MENOS] = { { 13, 0, 5 }, { -1 } },
+    [RJ_M5] = { { 18, 6, 5 }, { -1 } }, [RJ_M10] = { { 15, 0, 4 }, { -1 } }, [RJ_M15] = { { 16, 0, 6 }, { -1 } },
+    [RJ_M20] = { { 19, 0, 6 }, { -1 } }, [RJ_M25] = { { 18, 0, 11 }, { -1 } }, [RJ_M30] = { { 17, 0, 5 }, { -1 } },
+    [RJ_H1 + 0] = { { 3, 0, 3 }, { -1 } },   /* UNA */
+    [RJ_H1 + 1] = { { 4, 0, 3 }, { -1 } },   /* DOS */
+    [RJ_H1 + 2] = { { 5, 0, 4 }, { -1 } },   /* TRES */
+    [RJ_H1 + 3] = { { 6, 0, 6 }, { -1 } },   /* CUATRO */
+    [RJ_H1 + 4] = { { 7, 0, 5 }, { -1 } },   /* CINCO */
+    [RJ_H1 + 5] = { { 4, 2, 4 }, { -1 } },   /* SEIS */
+    [RJ_H1 + 6] = { { 4, 5, 5 }, { -1 } },   /* SIETE */
+    [RJ_H1 + 7] = { { 7, 4, 4 }, { -1 } },   /* OCHO */
+    [RJ_H1 + 8] = { { 8, 0, 5 }, { -1 } },   /* NUEVE */
+    [RJ_H1 + 9] = { { 9, 0, 4 }, { -1 } },   /* DIEZ */
+    [RJ_H1 + 10] = { { 7, 7, 4 }, { -1 } },  /* ONCE */
+    [RJ_H1 + 11] = { { 10, 0, 4 }, { -1 } }, /* DOCE */
 };
 
-/* [fila, columna, longitud] */
-enum { RJ_ES, RJ_SON, RJ_LA, RJ_LAS, RJ_PUNTO, RJ_Y, RJ_MENOS, RJ_M5, RJ_M10, RJ_M15, RJ_M20, RJ_M25, RJ_M30, RJ_H1 };
-static const signed char RJ_WORDS[RJ_H1 + 12][3] = {
-    [RJ_ES] = { 0, 3, 2 }, [RJ_SON] = { 0, 0, 3 }, [RJ_LA] = { 0, 5, 2 }, [RJ_LAS] = { 0, 5, 3 },
-    [RJ_PUNTO] = { 5, 4, 7 }, [RJ_Y] = { 6, 5, 1 }, [RJ_MENOS] = { 6, 0, 5 },
-    [RJ_M5] = { 8, 6, 5 }, [RJ_M10] = { 6, 7, 4 }, [RJ_M15] = { 7, 0, 6 }, [RJ_M20] = { 9, 0, 6 },
-    [RJ_M25] = { 8, 0, 11 }, [RJ_M30] = { 7, 6, 5 },
-    [RJ_H1 + 0] = { 0, 8, 3 },  /* UNA */
-    [RJ_H1 + 1] = { 1, 0, 3 },  /* DOS */
-    [RJ_H1 + 2] = { 2, 0, 4 },  /* TRES */
-    [RJ_H1 + 3] = { 2, 4, 6 },  /* CUATRO */
-    [RJ_H1 + 4] = { 3, 0, 5 },  /* CINCO */
-    [RJ_H1 + 5] = { 1, 2, 4 },  /* SEIS */
-    [RJ_H1 + 6] = { 1, 5, 5 },  /* SIETE */
-    [RJ_H1 + 7] = { 3, 4, 4 },  /* OCHO */
-    [RJ_H1 + 8] = { 4, 0, 5 },  /* NUEVE */
-    [RJ_H1 + 9] = { 4, 6, 4 },  /* DIEZ */
-    [RJ_H1 + 10] = { 3, 7, 4 }, /* ONCE */
-    [RJ_H1 + 11] = { 5, 0, 4 }, /* DOCE */
-};
+/* La rejilla montada: filas de «cols» letras. pos[pieza] = fila*cols + columna. */
+#define RJ_MAXC 40
+#define RJ_MAXR 12
+typedef struct { int cols, rows, pos[RJ_NTOK]; char g[RJ_MAXR][RJ_MAXC + 1]; } RjLayout;
+
+/* Las piezas van seguidas, y donde una fila no se llena se reparten letras de relleno entre
+ * ellas. La última fila acaba con la firma si cabe. */
+static int rj_layout(int cols, RjLayout *L)
+{
+    static const char FILL[] = "ALOREZMUTAPCOLAIRTEMOZA";
+    int fi = 0, t = 0;
+    if (cols < 11 || cols > RJ_MAXC) return 0;
+    L->cols = cols; L->rows = 0;
+    while (t < RJ_NTOK) {
+        if (L->rows == RJ_MAXR) return 0;
+        int a = t, used = 0;
+        while (t < RJ_NTOK && used + (int)strlen(RJ_TOK[t]) <= cols) used += (int)strlen(RJ_TOK[t++]);
+        int n = t - a, extra = cols - used, r = L->rows++;
+        char *row = L->g[r];
+        int c = 0;
+        int tail = n > 1 ? 0 : extra;   /* una sola pieza: el relleno, detrás */
+        int inner = extra - tail;
+        for (int i = a; i < t; i++) {
+            if (i > a) {   /* hueco entre piezas: el relleno, repartido */
+                int k = i - a - 1, gaps = n - 1, put = inner / gaps + (k < inner % gaps);
+                while (put--) row[c++] = FILL[fi++ % (sizeof FILL - 1)];
+            }
+            L->pos[i] = r * cols + c;
+            for (const char *q = RJ_TOK[i]; *q; q++) row[c++] = *q;
+        }
+        int sign = t == RJ_NTOK && cols - c >= 4;   /* la firma, al final de la última fila */
+        while (c < cols - (sign ? 4 : 0)) row[c++] = FILL[fi++ % (sizeof FILL - 1)];
+        if (sign) { memcpy(row + c, "YOUS", 4); c += 4; }
+        row[cols] = 0;
+    }
+    return 1;
+}
 
 static const char *const RJ_NAMES[RJ_H1 + 12] = {
     "es", "son", "la", "las", "en punto", "y", "menos", "cinco", "diez", "cuarto", "veinte", "veinticinco", "media",
@@ -78,15 +114,17 @@ static int rj_keys(int h, int m, int k[5])
     return n;
 }
 
-/* Letras encendidas: on[fila*11+col] = 1. */
-static void rj_lit(int h, int m, unsigned char on[110])
+/* Letras encendidas en una rejilla montada: on[fila*cols+col] = 1. */
+static void rj_lit(const RjLayout *L, int h, int m, unsigned char *on)
 {
     int k[5], n = rj_keys(h, m, k);
-    memset(on, 0, 110);
-    for (int i = 0; i < n; i++) {
-        const signed char *w = RJ_WORDS[k[i]];
-        for (int j = 0; j < w[2]; j++) on[w[0] * 11 + w[1] + j] = 1;
-    }
+    memset(on, 0, (size_t)L->rows * L->cols);
+    for (int i = 0; i < n; i++)
+        for (int p = 0; p < 2; p++) {
+            const signed char *w = RJ_PARTS[k[i]][p];
+            if (w[0] < 0) break;
+            for (int j = 0; j < w[2]; j++) on[L->pos[(int)w[0]] + w[1] + j] = 1;
+        }
 }
 
 /* La hora como frase: «son las siete y media», «es la una en punto». */
@@ -309,36 +347,44 @@ static void rj_disc(int cx, int cy, float r, int color)
         }
 }
 
-/* El reloj en el cuadrado (x, y, lado). Proporciones del diseño en un cuadrado de 400:
- * celdas de 26 × 30, letras de 14 de alto; «aire» es el margen alrededor de la rejilla
- * (57 en el diseño original) y «cap», el alto de las letras (14): en un cuadrado pequeño,
- * menos aire y letras más altas para que se lean. */
-static void rj_draw_ex(int x, int y, int side, int h, int m, int dots, float aire, float CAP)
+/* El reloj en el rectángulo (x, y, w, h). La rejilla toma las columnas con las que las letras
+ * salen más grandes: en un cuadrado, 11; en un hueco apaisado, más. Celdas de 26 × 30 (se
+ * estiran a lo ancho para llenar el hueco); «cap» es el alto de las letras en esas unidades
+ * (14 en el diseño). La rejilla queda a «px» y «py» del borde; los puntos de los minutos, en
+ * las esquinas. */
+static RjLayout rj_L;
+static void rj_draw_box(int x, int y, int w, int h, int hh, int mm, int dots, int px, int py, float cap)
 {
     const float CW = 26, CH = 30;
-    float s = side / (11 * CW + 2 * aire);       /* píxeles por unidad de diseño */
-    float gw = 11 * CW * s, gh = 10 * CH * s;
-    float ox = x + (side - gw) / 2, oy = y + (side - gh) / 2;
-    rj_build_masks(CAP / RJ_GH * s, 3);
-    FillArea(x, y, side, side, rj_bg);
-    unsigned char on[110];
-    rj_lit(h, m, on);
-    for (int r = 0; r < 10; r++)
-        for (int c = 0; c < 11; c++) {
-            char ch = RJ_GRID[r][c];
+    int gw = w - 2 * px, gh = h - 2 * py;
+    float best = 0;
+    RjLayout L;
+    for (int c = 11; c <= RJ_MAXC; c++) {
+        if (!rj_layout(c, &L)) continue;
+        float sx = gw / (c * CW), sy = gh / (L.rows * CH), s = sx < sy ? sx : sy;
+        if (s > best * 1.02f) { best = s; rj_L = L; }
+    }
+    if (best <= 0) return;
+    float s = best, cw = (float)gw / rj_L.cols, ch = CH * s;
+    float ox = x + px, oy = y + py + (gh - rj_L.rows * ch) / 2;
+    rj_build_masks(cap / RJ_GH * s, 3);
+    FillArea(x, y, w, h, rj_bg);
+    unsigned char on[RJ_MAXR * RJ_MAXC];
+    rj_lit(&rj_L, hh, mm, on);
+    for (int r = 0; r < rj_L.rows; r++)
+        for (int c = 0; c < rj_L.cols; c++) {
+            char chr = rj_L.g[r][c];
             int g = 0;
-            while (g < RJ_NGLYPHS && RJ_GLYPHS[g].c != ch) g++;
+            while (g < RJ_NGLYPHS && RJ_GLYPHS[g].c != chr) g++;
             if (g == RJ_NGLYPHS) continue;
-            rj_stamp(g, (int)(ox + (c + 0.5f) * CW * s + 0.5f), (int)(oy + (r + 0.5f) * CH * s + 0.5f), on[r * 11 + c] ? rj_on : rj_off);
+            rj_stamp(g, (int)(ox + (c + 0.5f) * cw + 0.5f), (int)(oy + (r + 0.5f) * ch + 0.5f), on[r * rj_L.cols + c] ? rj_on : rj_off);
         }
     if (dots) {
-        float e = (aire * 0.4f) * s, rad = 2.6f * s * 1.3f;
-        if (e < rad * 2) e = rad * 2;
-        float px[4] = { x + e, x + side - e, x + side - e, x + e }, py[4] = { y + e, y + e, y + side - e, y + side - e };
-        for (int i = 0; i < 4; i++) rj_disc((int)px[i], (int)py[i], rad, i < m % 5 ? rj_on : rj_off);
+        float rad = 3.4f * s, e = rad + 2;
+        float dx[4] = { x + e, x + w - e, x + w - e, x + e }, dy[4] = { y + e, y + e, y + h - e, y + h - e };
+        for (int i = 0; i < 4; i++) rj_disc((int)dx[i], (int)dy[i], rad, i < mm % 5 ? rj_on : rj_off);
     }
 }
-static void rj_draw(int x, int y, int side, int h, int m, int dots) { rj_draw_ex(x, y, side, h, m, dots, 30, 14); }
 
 /* Ajustes compartidos entre Pockit y el Modo bolsillo. Por defecto, encendido si el lector
  * está en español (el reloj habla castellano). */

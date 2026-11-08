@@ -85,7 +85,7 @@ static void update_check(int force);
 static int home_shown;
 static char sync_note[80];
 static int card_y0, card_y1, donde_y0, tiles_y0, tiles_cols = 3;
-static int clock_x, clock_y, clock_side;   /* el reloj de palabras del Inicio (lado 0: no hay) */
+static int clock_x, clock_y, clock_w, clock_side;   /* el reloj de palabras del Inicio (alto 0: no hay) */
 #define TILE_H 180
 
 typedef struct { const char *name; int mod; const unsigned char *icon; int len; } Tile;
@@ -111,7 +111,7 @@ static void draw_home_clock(void)
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
-    rj_draw_ex(clock_x, clock_y, clock_side, tm.tm_hour, tm.tm_min, 1, 20, 17);
+    rj_draw_box(clock_x, clock_y, clock_w, clock_side, tm.tm_hour, tm.tm_min, 1, 30, 16, 16);
     clock_min = tm.tm_hour * 60 + tm.tm_min;
 }
 
@@ -124,7 +124,7 @@ static void home_clock_tick(void)
     localtime_r(&now, &tm);
     if (tm.tm_hour * 60 + tm.tm_min != clock_min) {
         draw_home_clock();
-        PartialUpdate(clock_x, clock_y, clock_side, clock_side);
+        PartialUpdate(clock_x, clock_y, clock_w, clock_side);
     }
     SetWeakTimer("pk_reloj", home_clock_tick, (60 - tm.tm_sec) * 1000 + 300);
 }
@@ -223,17 +223,14 @@ static void draw_home(void)
         DrawTextRect(x, ty + 128, tw, 40, TILES[i].mod == MOD_AJUSTES && new_version[0] ? T("Ajustes ·") : T(TILES[i].name), ALIGN_CENTER | DOTS);
     }
 
-    /* el reloj, en el hueco entre tu semana y los módulos */
+    /* el reloj, en todo el hueco entre tu semana y los módulos: la rejilla toma su forma */
     clock_side = 0;
-    if (with_clock) {
-        int side = tiles_y0 - y - 20;
-        if (side > W - 2 * M) side = W - 2 * M;
-        if (side >= 300) {
-            clock_side = side;
-            clock_x = (W - side) / 2;
-            clock_y = y + (tiles_y0 - y - side) / 2 - 10;
-            draw_home_clock();
-        }
+    if (with_clock && tiles_y0 - y - 30 >= 200) {
+        clock_x = M - 8;   /* las esquinas, a ras de los recuadros de los módulos */
+        clock_w = W - 2 * M + 16;
+        clock_y = y - 10;
+        clock_side = tiles_y0 - clock_y - 20;
+        draw_home_clock();
     }
     POCKIT_REFRESH(home_shown);
 }

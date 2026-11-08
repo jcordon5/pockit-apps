@@ -169,7 +169,7 @@ static void draw_clock(void)
     localtime_r(&now, &tm);
     int x, y, side;
     clock_rect(&x, &y, &side);
-    rj_draw(x, y, side, tm.tm_hour, tm.tm_min, 0);
+    rj_draw_box(x, y, side, side, tm.tm_hour, tm.tm_min, 0, side * 3 / 35, side * 3 / 35, 14);
     shown_slot = tm.tm_min / 5;
     shown_hour = tm.tm_hour;
 }
