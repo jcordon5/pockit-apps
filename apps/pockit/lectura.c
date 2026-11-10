@@ -1030,6 +1030,41 @@ static int in_shelf(const char *name)
 static void shelf_local(const char *name, char *out, size_t n) { snprintf(out, n, FLASHDIR "/Pockit/Biblioteca/%s", name); }
 static int shelf_here(const char *name) { char p[1100]; struct stat sb; shelf_local(name, p, sizeof p); return !stat(p, &sb); }
 
+/* Qué libros de tu biblioteca de Dropbox tiene este lector: Pockit/Lectores/<lector>.txt, para que
+ * la web enseñe en qué lector está descargado cada uno. Una línea por libro (relativo a Biblioteca). */
+static void report_dir(const char *dir, const char *rel, JBuf *b, int depth)
+{
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t nl = strlen(e->d_name);
+        if (e->d_name[0] == '.' || (nl > 4 && !strcmp(e->d_name + nl - 4, ".tmp"))) continue;   /* a medio bajar */
+        char p[1100], r[1100];
+        struct stat sb;
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        if (stat(p, &sb)) continue;
+        if (S_ISDIR(sb.st_mode)) { if (depth < 4) report_dir(p, r, b, depth + 1); }
+        else { jb_cat(b, r); jb_cat(b, "\n"); }
+    }
+    closedir(d);
+}
+void pockit_shelf_report(void)
+{
+    if (!nube_linked()) return;
+    JBuf b = { 0 };
+    jb_cat(&b, "# ");
+    jb_cat(&b, lector_id());
+    jb_cat(&b, "\n");
+    report_dir(FLASHDIR "/Pockit/Biblioteca", "", &b, 0);
+    char dir[700], p[900];
+    pockit_path(dir, sizeof dir, "Lectores");
+    snprintf(p, sizeof p, "%s/%s.txt", dir, lector_id());
+    write_if_changed(p, &b);
+    free(b.s);
+}
+
 static void load_shelf(void)
 {
     nshelf = nube_linked() ? nube_books(shelf, MAX_SHELF) : 0;
@@ -1228,6 +1263,7 @@ static void get_file(void)
     busy(msg);
     if (!nube_book_get(act_name, err, sizeof err)) { draw(); Message(ICON_WARNING, "Dropbox", err, 4000); return; }
     int scanned = pockit_books_index(busy);   /* a la biblioteca del lector */
+    pockit_shelf_report();
     reload_all();
     draw();
     if (scanned) FullUpdate();
@@ -1248,6 +1284,7 @@ static void remove_here(void)
         if (rename(p, to)) remove(p);
     }
     pockit_books_scan();   /* que la biblioteca del lector lo olvide */
+    pockit_shelf_report();
     reload_all();
     draw();
 }

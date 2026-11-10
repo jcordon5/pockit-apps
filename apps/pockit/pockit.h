@@ -11,7 +11,7 @@
 #ifndef POCKIT_H
 #define POCKIT_H
 
-#define POCKIT_VERSION "2.10.1"
+#define POCKIT_VERSION "2.11.0"
 
 enum { MOD_HOME, MOD_LECTURA, MOD_CUADERNO, MOD_IA, MOD_FONDOS, MOD_AJUSTES, MOD_COUNT };
 
@@ -74,6 +74,7 @@ int pockit_books_missing(int notify);       /* libros de Pockit/Biblioteca que l
 int pockit_books_index(void (*progress)(const char *msg));   /* tras sincronizar; 1 si hay que repintar */
 void pockit_books_scan(void);               /* al cerrar: que el lector busque los que falten */
 void pockit_marks_merge(void);              /* rehace subrayados.md con los de todos tus lectores */
+void pockit_shelf_report(void);             /* Lectores/<lector>.txt: qué libros de Dropbox tiene este lector (para la web) */
 void cuaderno_open_note(const char *path);  /* abre una nota concreta */
 void cuaderno_open_tag(const char *tag);    /* abre el Cuaderno filtrado por una etiqueta */
 

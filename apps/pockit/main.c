@@ -242,6 +242,7 @@ static long sync_tried;
 static void after_sync(void (*progress)(const char *msg))
 {
     pockit_marks_merge();
+    pockit_shelf_report();   /* sube en la próxima sincronización */
     if (pockit_books_index(progress)) {   /* el buscador del lector pinta encima: se repinta todo */
         if (cur == MOD_HOME) draw_home(); else HANDLERS[cur](EVT_SHOW, 0, 0);
         FullUpdate();
@@ -263,6 +264,7 @@ static void home_sync_tick(void)
     sync_tried = time(NULL);
     sync_status(T("Sincronizando…"));
     char out[400];
+    pockit_shelf_report();
     int ok = nube_sync(0, sync_status, out, sizeof out);   /* un libro tarda: se ve cuál */
     after_sync(sync_status);
     sync_status(ok ? T("Dropbox al día") : T("Dropbox: no se pudo sincronizar"));
@@ -504,6 +506,7 @@ static void on_data(int button)
     if (button == 1) {
         sync_progress(T("Sincronizando con Dropbox…"));
         char out[400];
+        pockit_shelf_report();
         nube_sync(1, sync_progress, out, sizeof out);
         after_sync(sync_progress);
         draw_ajustes();
