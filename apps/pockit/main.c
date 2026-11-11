@@ -479,7 +479,7 @@ static void do_update(int button)
 
 /* ---------- Ajustes ---------- */
 static int aj_shown;
-static int ai_y, ver_y, data_y, ai_h = 140, ver_h = 140, data_h = 200, clk_y[2];
+static int ai_y, ver_y, data_y, ai_h = 140, ver_h = 140, data_h = 200, clk_y[2], mando_y, in_mando;
 static const char *const CLK_WHERE[2] = { "inicio", "bolsillo" };
 static void draw_ajustes(void);
 
@@ -589,9 +589,25 @@ static void draw_ajustes(void)
         SetFont(f_small, SOFT);
         DrawString(M, y + 46, T(CLK_SUB[i]));
         switch_at(W - M - 140, y + 4, rj_enabled(CLK_WHERE[i]));
-        y += 110;
+        y += 100;
     }
     y += 10;
+    DrawLine(M, y, W - M, y, LINE);
+    y += 30;
+
+    /* mandos Bluetooth que el lector no deja añadir */
+    SetFont(f_smallb, SOFT);
+    DrawString(M, y, T("MANDO BLUETOOTH"));
+    y += 50;
+    mando_y = y;
+    int nb = mando_count();
+    SetFont(f_body, BLACK);
+    DrawString(M, y, nb ? T("Tu mando  ›") : T("Añadir un mando  ›"));
+    SetFont(f_small, SOFT);
+    if (nb) snprintf(line, sizeof line, T("%d botones · se reconecta solo al despertar"), nb);
+    else snprintf(line, sizeof line, "%s", T("Pasapáginas y mandos que el lector no reconoce"));
+    DrawString(M, y + 46, line);
+    y += 100;
     DrawLine(M, y, W - M, y, LINE);
     y += 30;
 
@@ -620,15 +636,22 @@ static void draw_ajustes(void)
     y += 50 + th + 30;
     SetFont(f_small, SOFT);
     const char *itxt = T("Para instalar o quitar apps, y para cambiar fondos y música: pockit.yous.dev");
-    DrawTextRect(M, y, W - 2 * M, TextRectHeight(W - 2 * M, itxt, ALIGN_LEFT), itxt, ALIGN_LEFT);
+    th = TextRectHeight(W - 2 * M, itxt, ALIGN_LEFT);
+    if (y + th <= H - 16) DrawTextRect(M, y, W - 2 * M, th, itxt, ALIGN_LEFT);   /* si no cabe, mejor sin ella que cortada */
     POCKIT_REFRESH(aj_shown);
 }
 
+static int mando_first;
+static void mando_closed(void) { in_mando = 0; aj_shown = 0; draw_ajustes(); }
+
 static int ajustes_h(int type, int par1, int par2)
 {
+    if (in_mando && type != EVT_INIT && mando_handler(type, par1, par2)) return 1;
     switch (type) {
     case EVT_INIT: SetPanelType(PANEL_DISABLED); fonts(); break;
-    case EVT_SHOW: update_check(0); draw_ajustes(); break;
+    case EVT_SHOW:
+        if (mando_first) { mando_first = 0; in_mando = 1; mando_open(mando_closed); break; }   /* «pockit ajustes mando» */
+        update_check(0); draw_ajustes(); break;
     case EVT_POINTERUP: {
         int x = par1, y = par2;
         if (pockit_back_hit(x, y)) { pockit_home(); return 1; }
@@ -638,8 +661,9 @@ static int ajustes_h(int type, int par1, int par2)
             return 1;
         }
         if (y >= ai_y - 10 && y < ai_y + ai_h && ai_bearer()[0]) { pockit_open(MOD_IA); return 1; }
+        if (y >= mando_y - 10 && y < mando_y + 90) { in_mando = 1; mando_open(mando_closed); return 1; }
         for (int i = 0; i < 2; i++)
-            if (y >= clk_y[i] - 10 && y < clk_y[i] + 100) {
+            if (y >= clk_y[i] - 10 && y < clk_y[i] + 90) {
                 rj_default = !pockit_en();
                 rj_set_enabled(CLK_WHERE[i], !rj_enabled(CLK_WHERE[i]));
                 FillArea(W - M - 140, clk_y[i] + 4, 140, 64, WHITE);
@@ -670,6 +694,7 @@ static int main_handler(int type, int par1, int par2)
     if (type == EVT_INIT) {
         SetPanelType(PANEL_DISABLED);
         inited[cur] = 1;
+        mando_watch();   /* si hay un mando, que se reconecte al despertar */
         return HANDLERS[cur](EVT_INIT, par1, par2);
     }
     if (type == EVT_EXIT) {
@@ -684,6 +709,7 @@ static int main_handler(int type, int par1, int par2)
 
 int main(int argc, char *argv[])
 {
+    if (argc > 1 && !strcmp(argv[1], "--mando")) return mando_daemon();   /* el que reconecta el mando, sin pantalla */
     /* Para el emulador: «pockit <módulo> [argumentos del módulo]» abre directamente un módulo. */
     if (argc > 1) {
         static const char *names[] = { "inicio", "lectura", "cuaderno", "ia", "fondos", "ajustes" };
@@ -693,6 +719,7 @@ int main(int argc, char *argv[])
                 if (m == MOD_LECTURA) lectura_args(argc - 1, argv + 1);
                 if (m == MOD_CUADERNO) cuaderno_args(argc - 1, argv + 1);
                 if (m == MOD_IA) ia_args(argc - 1, argv + 1);
+                if (m == MOD_AJUSTES && argc > 2 && !strcmp(argv[2], "mando")) mando_first = 1;
             }
     }
     InkViewMain(main_handler);
