@@ -83,7 +83,8 @@ static Mark marks[MAX_MARKS];
 static int nmarks, nwords;
 static char error_msg[200];
 
-static const char *BOOK_EXT[] = { "epub", "pdf", "fb2", "mobi", "azw", "azw3", "djvu", "txt", "rtf", "doc", "docx", "cbz", "cbr", "chm", "html", "htm", "prc", "odt", NULL };
+static const char *BOOK_EXT[] = { "epub", "pdf", "fb2", "mobi", "azw", "azw3", "djvu", "txt", "rtf", "doc", "docx", "cbz", "cbr", "chm", "html", "htm", "prc", "odt",
+                                  "acsm", "lcpl", NULL };   /* préstamos de biblioteca: el lector baja el libro al abrirlos */
 
 static int is_book(const char *fn)
 {
