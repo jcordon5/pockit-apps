@@ -1031,7 +1031,7 @@ static int in_shelf(const char *name)
 static void shelf_local(const char *name, char *out, size_t n) { snprintf(out, n, FLASHDIR "/Pockit/Biblioteca/%s", name); }
 static int shelf_here(const char *name) { char p[1100]; struct stat sb; shelf_local(name, p, sizeof p); return !stat(p, &sb); }
 
-/* Qué libros de tu biblioteca de Dropbox tiene este lector: Pockit/Lectores/<lector>.txt, para que
+/* Qué libros de tu biblioteca de Dropbox tiene este lector: Pockit/Lectores/<lector>.tsv, para que
  * la web enseñe en qué lector está descargado cada uno. Una línea por libro (relativo a Biblioteca). */
 static void report_dir(const char *dir, const char *rel, JBuf *b, int depth)
 {
@@ -1062,6 +1062,8 @@ void pockit_shelf_report(void)
     char dir[700], p[900];
     pockit_path(dir, sizeof dir, "Lectores");
     snprintf(p, sizeof p, "%s/%s.txt", dir, lector_id());
+    remove(p);   /* hasta la 2.12.0 era .txt, y la biblioteca del lector lo tomaba por un libro */
+    snprintf(p, sizeof p, "%s/%s.tsv", dir, lector_id());
     write_if_changed(p, &b);
     free(b.s);
 }

@@ -12,7 +12,8 @@
  *
  * Pantalla: «pulsa el botón de avanzar» → «ahora el de retroceder», tantas veces como modos
  * tenga el mando. Tocar un botón de la lista le da la vuelta (avanzar ↔ retroceder). El resto
- * de funciones (capítulos, luz, pulsación larga…) se ponen en la pantalla del propio lector.
+ * de funciones (capítulos, luz, pulsación larga…) se ponen en la pantalla del propio lector
+ * (Ajustes → … → Botones Bluetooth); abrirla desde Pockit con OpenTask colgaba el lector.
  *
  * Reconectar: el lector no vuelve a conectar el mando al despertar. Pockit deja un proceso
  * pequeño («Pockit.app --mando») que, al despertar el lector, intenta durante dos minutos
@@ -250,11 +251,12 @@ static void pressed(int code)
     draw();
 }
 
+/* Abrir la pantalla del lector desde aquí (OpenTask de bt_keymapping.app) lo dejaba colgado:
+ * se dice dónde está. */
 static void open_native(void)
 {
-    static const char *const args[] = { "-epub" };
-    if (OpenTask("/ebrmain/bin/bt_keymapping.app", 1, args, 0) < 0)
-        Message(ICON_INFORMATION, T("Tu mando"), T("Están en los Ajustes del lector → Botones Bluetooth."), 4000);
+    Message(ICON_INFORMATION, T("Más funciones"),
+            T("En los Ajustes del lector, dentro de la lectura de EPUB (y de PDF), en «Botones Bluetooth»: tus botones salen ahí con su nombre y a cada uno le puedes dar la función que quieras, también al mantenerlo pulsado."), 8000);
 }
 
 void mando_open(void (*close_cb)(void))
