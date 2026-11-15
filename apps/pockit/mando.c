@@ -17,8 +17,10 @@
  *
  * Reconectar: el lector no vuelve a conectar el mando al despertar. Pockit deja un proceso
  * pequeño («Pockit.app --mando») que, al despertar el lector, intenta durante dos minutos
- * reconectar los mandos y teclados Bluetooth emparejados que estén desconectados. Fuera de
- * esos dos minutos solo mira el reloj cada 10 s. Se acaba solo si ya no hay botones.
+ * reconectar los mandos y teclados Bluetooth emparejados que estén desconectados. Y mientras
+ * hay uno conectado, no deja que el lector se duerma entre página y página (si duerme, las
+ * pulsaciones se quedan en cola y luego pasa varias páginas de golpe). Lo que pasa queda en
+ * system/config/pockit/mando.log. Se acaba solo si ya no hay botones.
  */
 #include "inkview.h"
 #include <stdio.h>
@@ -27,6 +29,9 @@
 #include <time.h>
 #include <signal.h>
 #include <unistd.h>
+#include <stdarg.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include "pockit.h"
 
 #define GLOBAL_CFG FLASHDIR "/system/config/global.cfg"
@@ -296,9 +301,11 @@ int mando_handler(int type, int par1, int par2)
 
 /* ---------- reconectar al despertar ---------- */
 
-/* Los mandos y teclados Bluetooth emparejados y desconectados; devuelve cuántos había. */
-static int reconnect(void)
+/* Los mandos y teclados Bluetooth emparejados: cuántos están conectados (*on) y, si connect,
+ * intenta conectar los que no. Devuelve cuántos había desconectados. */
+static int hid_scan(int connect, int *on)
 {
+    *on = 0;
     FILE *p = popen("dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>/dev/null", "r");
     if (!p) return 0;
     char line[400], cur[120] = "", todo[8][120];
@@ -306,8 +313,11 @@ static int reconnect(void)
     for (;;) {
         char *got = fgets(line, sizeof line, p);
         char *op = got ? strstr(line, "object path \"") : NULL;
-        if (!got || op) {   /* acaba un objeto: si era un mando desconectado, a la lista */
-            if (cur[0] && hid && paired && !conn && ntodo < 8) snprintf(todo[ntodo++], sizeof todo[0], "%s", cur);
+        if (!got || op) {   /* acaba un objeto: si era un mando, se cuenta */
+            if (cur[0] && hid && paired) {
+                if (conn) (*on)++;
+                else if (ntodo < 8) snprintf(todo[ntodo++], sizeof todo[0], "%s", cur);
+            }
             if (!got) break;
             cur[0] = 0; hid = paired = 0; conn = 1;
             char *s = op + 13, *e = strchr(s, '"');
@@ -328,7 +338,7 @@ static int reconnect(void)
         }
     }
     pclose(p);
-    for (int i = 0; i < ntodo; i++) {
+    for (int i = 0; connect && i < ntodo; i++) {
         char cmd[300];
         snprintf(cmd, sizeof cmd, "dbus-send --system --print-reply --dest=org.bluez '%s' org.bluez.Device1.Connect >/dev/null 2>&1", todo[i]);
         system(cmd);
@@ -336,23 +346,79 @@ static int reconnect(void)
     return ntodo;
 }
 
+/* Registro de lo que pasa (system/config/pockit/mando.log): cuándo duerme el lector, cuándo se
+ * conecta o se va el mando y si se le pudo impedir dormir. Para ver por cable qué falla. */
+#define MANDO_LOG FLASHDIR "/system/config/pockit/mando.log"
+static void mlog(const char *fmt, ...)
+{
+    struct stat sb;
+    if (!stat(MANDO_LOG, &sb) && sb.st_size > 300000) rename(MANDO_LOG, MANDO_LOG ".1");
+    FILE *f = fopen(MANDO_LOG, "a");
+    if (!f) return;
+    char when[32];
+    time_t t = time(NULL);
+    strftime(when, sizeof when, "%d/%m %H:%M:%S", localtime(&t));
+    fprintf(f, "%s  ", when);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
+
+#ifndef CLOCK_BOOTTIME
+#define CLOCK_BOOTTIME 7
+#endif
+static double clk(clockid_t c) { struct timespec t; clock_gettime(c, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+
+/* Mientras el mando está conectado, que el lector no se eche a dormir entre página y página:
+ * dormido, las pulsaciones no lo despiertan, se quedan en cola y al tocar la pantalla llegan
+ * todas juntas (y pasa varias páginas). BanSleep va en un proceso aparte: si fallara sin InkView
+ * en marcha, no se lleva por delante al que reconecta. */
+static int ban_sleep(int secs)
+{
+    pid_t pid = fork();
+    if (pid == 0) { BanSleep(secs); _exit(0); }
+    if (pid < 0) return -1;
+    int st = 0;
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 100 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
+}
+
 int mando_daemon(void)
 {
     signal(SIGHUP, SIG_IGN);
     FILE *f = fopen(PIDFILE, "w");
-    if (f) { fprintf(f, "%d\n", (int)getpid()); fclose(f); }
-    int tries = 12;   /* dos minutos */
-    time_t last = time(NULL);
+    if (f) { fprintf(f, "%d %s\n", (int)getpid(), POCKIT_VERSION); fclose(f); }
+    mlog("Pockit %s: empieza (pid %d)", POCKIT_VERSION, (int)getpid());
+    /* tries: tras despertar, si el mando estaba conectado y se ha ido, intentarlo cada 2 s durante
+     * dos minutos. Si estaba apagado, nada: así no se pone a buscarlo después de cada página. */
+    int tries = 0, on = -1, last_ban = -1, tick = 0;
+    double slept0 = clk(CLOCK_BOOTTIME) - clk(CLOCK_MONOTONIC);
     for (;;) {
-        if (tries > 0) { tries--; if (!reconnect()) tries = 0; }
-        sleep(10);
-        time_t now = time(NULL);
-        if (now - last > 40 || now < last) {   /* el lector ha dormido */
-            if (!mando_count()) break;
-            tries = 12;
+        int now_on;
+        if (tries > 0) { tries--; if (!hid_scan(1, &now_on)) tries = 0; }
+        else if (tick % 10 == 0) hid_scan(0, &now_on);   /* cada 20 s: ¿se ha encendido o apagado? */
+        else now_on = on;
+        if (now_on != on) { mlog(now_on ? "mando conectado (%d)" : "mando desconectado", now_on); on = now_on; }
+        int no_ban = !access(FLASHDIR "/system/config/pockit/mando-sin-ban", F_OK);   /* solo para pruebas */
+        if (on > 0 && no_ban && last_ban != -2) { mlog("prueba: sin BanSleep"); last_ban = -2; }
+        if (on > 0 && !no_ban && tick % 10 == 0) {   /* cada 20 s, prohibido dormir los próximos 30 */
+            int r = ban_sleep(30);
+            if (r != last_ban) { mlog("BanSleep(30) → %d", r); last_ban = r; }
         }
-        last = now;
+        if (tick % 300 == 299 && !mando_count()) break;   /* cada 10 min: ¿sigue habiendo botones? */
+        sleep(2);
+        tick++;
+        double slept = clk(CLOCK_BOOTTIME) - clk(CLOCK_MONOTONIC);
+        if (slept - slept0 > 0.5 && on > 0) {   /* ha dormido con el mando conectado */
+            if (no_ban) mlog("el lector ha dormido %.1f s", slept - slept0);
+            tries = 60;
+        }
+        slept0 = slept;
     }
+    mlog("sin botones: se acaba");
     remove(PIDFILE);
     return 0;
 }
@@ -364,7 +430,8 @@ void mando_watch(void)
     if (!mando_count()) return;
     FILE *f = fopen(PIDFILE, "r");
     int pid = 0;
-    if (f) { if (fscanf(f, "%d", &pid) != 1) pid = 0; fclose(f); }
+    char ver[32] = "";
+    if (f) { if (fscanf(f, "%d %31s", &pid, ver) < 1) pid = 0; fclose(f); }
     if (pid > 0 && !kill(pid, 0)) {
         char p[64], cmd[300] = "";
         snprintf(p, sizeof p, "/proc/%d/cmdline", pid);
@@ -372,7 +439,11 @@ void mando_watch(void)
         size_t n = c ? fread(cmd, 1, sizeof cmd - 1, c) : 0;
         if (c) fclose(c);
         for (size_t i = 0; i < n; i++) if (!cmd[i]) cmd[i] = ' ';
-        if (strstr(cmd, "--mando")) return;   /* ya está */
+        if (strstr(cmd, "--mando")) {
+            if (!strcmp(ver, POCKIT_VERSION)) return;   /* ya está */
+            kill(pid, SIGTERM);   /* es de una versión anterior: se cambia por este */
+            usleep(200000);
+        }
     }
     char self[600], cmd[900];
     ssize_t l = readlink("/proc/self/exe", self, sizeof self - 1);
